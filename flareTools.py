@@ -1,6 +1,26 @@
 import numpy as np
 import pandas as pd
 from scipy.interpolate import LSQUnivariateSpline, UnivariateSpline, splrep, splev
+import time, sys
+from IPython.display import clear_output
+
+# Progress bar for long for loops in ipython notebook
+def update_progress(progress):
+    bar_length = 20
+    if isinstance(progress, int):
+        progress = float(progress)
+    if not isinstance(progress, float):
+        progress = 0
+    if progress < 0:
+        progress = 0
+    if progress >= 1:
+        progress = 1
+
+    block = int(round(bar_length * progress))
+
+    clear_output(wait = True)
+    text = "Progress: [{0}] {1:.1f}%".format( "#" * block + "-" * (bar_length - block), progress * 100)
+    print(text)
 
 def FINDflare(flux, error, N1=3, N2=1, N3=3,
               avg_std=False, std_window=7,
