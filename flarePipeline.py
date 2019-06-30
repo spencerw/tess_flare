@@ -108,7 +108,7 @@ def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progC
         
     ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
-    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id], 'i0':FL_i0, 'i1':FL_i1,
+    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
                                    't0':FL_t0, 't1':FL_t1,
                                    'med':FL_f0, 'peak':FL_f1})
     flare_out.to_csv(sector+ '_flare_out.csv')
