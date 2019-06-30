@@ -12,7 +12,7 @@ from flareTools import FINDflare, IRLSSpline, update_progress
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def procFlares(files, sector, makefig=True, clobber=False):
+def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progCounter=False):
 
     FL_id = np.array([])
     FL_t0 = np.array([])
@@ -37,19 +37,25 @@ def procFlares(files, sector, makefig=True, clobber=False):
         ok_cut = (tbl['QUALITY'] == 0)
         
         median = np.nanmedian(df_tbl['PDCSAP_FLUX'][ok_cut])
-        acf = xo.autocorr_estimator(tbl['TIME'][ok_cut], tbl['PDCSAP_FLUX'][ok_cut]/median,
-                                    yerr=tbl['PDCSAP_FLUX_ERR'][ok_cut]/median,
-                                    min_period=0.1, max_period=27, max_peaks=2)
         
-        if len(acf['peaks']) > 0:
-            acf_1dt = acf['peaks'][0]['period']
-            mask = np.where((acf['autocorr'][0] == acf['peaks'][0]['period']))[0]
-            acf_1pk = acf['autocorr'][1][mask][0]
-            s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
+        if doSpline:
+            smo = IRLSSpline(df_tbl['TIME'].values[ok_cut], df_tbl['PDCSAP_FLUX'].values[ok_cut]/median,
+                         df_tbl['PDCSAP_FLUX_ERR'].values[ok_cut]/median)
         else:
-            s_window = 128
+            acf = xo.autocorr_estimator(tbl['TIME'][ok_cut], tbl['PDCSAP_FLUX'][ok_cut]/median,
+                                        yerr=tbl['PDCSAP_FLUX_ERR'][ok_cut]/median,
+                                        min_period=0.1, max_period=27, max_peaks=2)
+
+            if len(acf['peaks']) > 0:
+                acf_1dt = acf['peaks'][0]['period']
+                mask = np.where((acf['autocorr'][0] == acf['peaks'][0]['period']))[0]
+                acf_1pk = acf['autocorr'][1][mask][0]
+                s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
+            else:
+                s_window = 128
+
+            smo = df_tbl['PDCSAP_FLUX'][ok_cut].rolling(s_window, center=True).median()
         
-        smo = df_tbl['PDCSAP_FLUX'][ok_cut].rolling(s_window, center=True).median()
 
         if makefig:
             fig, axes = plt.subplots(figsize=(8,8))
@@ -74,8 +80,8 @@ def procFlares(files, sector, makefig=True, clobber=False):
         
         for j in range(len(FL[0])):
             FL_id = np.append(FL_id, k)
-            FL_t0 = np.append(FL_t0, FL[0][j])
-            FL_t1 = np.append(FL_t1, FL[1][j])
+            FL_t0 = np.append(FL_t0, df_tbl['TIME'][ok_cut][sok_cut].values[FL[0][j]])
+            FL_t1 = np.append(FL_t1, df_tbl['TIME'][ok_cut][sok_cut].values[FL[1][j]])
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][ok_cut][sok_cut][s1:s2]))
@@ -97,10 +103,12 @@ def procFlares(files, sector, makefig=True, clobber=False):
             plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
             plt.close()      
         
-        update_progress(k / len(files))
+        if progCounter:
+            update_progress(k / len(files))
         
     ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
-    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id], 'i0':FL_t0, 'i1':FL_t1,
+    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id], 'i0':FL_i0, 'i1':FL_i1,
+                                   't0':FL_t0, 't1':FL_t1,
                                    'med':FL_f0, 'peak':FL_f1})
     flare_out.to_csv(sector+ '_flare_out.csv')
