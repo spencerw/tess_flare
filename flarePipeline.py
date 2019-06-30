@@ -49,7 +49,7 @@ def procFlares(files, sector, makefig=True, clobber=False):
         else:
             s_window = 128
         
-        smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
+        smo = df_tbl['PDCSAP_FLUX'][ok_cut].rolling(s_window, center=True).median()
 
         if makefig:
             fig, axes = plt.subplots(figsize=(8,8))
