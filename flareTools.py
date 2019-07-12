@@ -22,6 +22,49 @@ def update_progress(progress):
     text = "Progress: [{0}] {1:.1f}%".format( "#" * block + "-" * (bar_length - block), progress * 100)
     print(text)
 
+def id_segments(time, dt_limit, dt_trim=0):
+    '''
+    Identify breaks in a 1D array of time values larger than dt_limit
+    Divide the array into segments and trim some amount of data off of
+    the end of each segment
+    Parameters
+    ----------
+    time : numpy array
+        time values to segment
+    dt_limit : float
+        Smallest time interval to consider a 'break'
+    dt_trim : float, optional
+        Time interval to trim off of the ends of each segment
+    Returns
+    -------
+        istart, istop which are each arrays containing the indices of the
+        start and stop times in the 'time' array
+    '''
+    # Identify segments
+    i_seg = np.array([0])
+    dt = np.diff(time)
+    for idx, val in enumerate(dt):
+        if val > dt_limit:
+            i_seg = np.append(i_seg, idx)
+            i_seg = np.append(i_seg, idx+1)
+    i_seg = np.append(i_seg, len(time)-1)
+    
+    # Trim the ends of the segments by dt_trim
+    i_start = np.array([], dtype='int')
+    i_end = np.array([], dtype='int')
+    for idx in range(0, len(i_seg), 2):
+        diff = (time - time[i_seg[idx]])
+        i_left_new = np.where(diff > dt_trim)[0][0]
+        i_seg[idx] = i_left_new
+        
+        diff = (time[i_seg[idx+1]] - time)
+        i_right_new = np.where(diff > dt_trim)[0][-1]
+        i_seg[idx+1] = i_right_new
+        
+        i_start = np.append(i_start, i_left_new)
+        i_end = np.append(i_end, i_right_new)
+    return i_start, i_end
+    
 def FINDflare(flux, error, N1=3, N2=1, N3=3,
               avg_std=False, std_window=7,
               returnbinary=False, debug=False):
