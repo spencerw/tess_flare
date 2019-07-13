@@ -6,21 +6,93 @@ import pandas as pd
 import numpy as np
 import exoplanet as xo
 import os
+import celerite
+from celerite import terms
+from scipy.optimize import minimize
 
 from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
 
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progCounter=False):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
+    
+    x = time[::interval]
+    y = flux[::interval]
+    yerr = flux_err[::interval]
+    
+    # A non-periodic component
+    Q = 1.0 / np.sqrt(2.0)
+    w0 = period_guess
+    S0 = np.var(y) / (w0 * Q)
+    bounds = dict(log_S0=(-20, 15), log_Q=(-15, 15), log_omega0=(-15, 15))
+    kernel = terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
+                           bounds=bounds)
+    kernel.freeze_parameter("log_Q")  # We don't want to fit for "Q" in this term
+
+    # A periodic component
+    Q = 1.0
+    w0 = 3.0
+    S0 = np.var(y) / (w0 * Q)
+    kernel += terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
+                            bounds=bounds)
+
+    gp = celerite.GP(kernel, mean=np.mean(y))
+    gp.compute(x, yerr)  # You always need to call compute once.
+
+    def neg_log_like(params, y, gp, m):
+        gp.set_parameter_vector(params)
+        return -gp.log_likelihood(y[m])
+
+    def grad_neg_log_like(params, y, gp, m):
+        gp.set_parameter_vector(params)
+        return -gp.grad_log_likelihood(y[m])[1]
+
+    bounds = gp.get_parameter_bounds()
+    initial_params = gp.get_parameter_vector()
+    m = np.ones(len(x), dtype=bool)
+    for i in range(10):
+        gp.compute(x[m], yerr[m])
+        soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
+                        method="L-BFGS-B", bounds=bounds, args=(y, gp, m))
+        gp.set_parameter_vector(soln.x)
+    #     print(soln)
+        initial_params = soln.x
+        # log_a, logQ1, mix_par, logQ2, log_P
+    #     print(initial_params)
+        mu, var = gp.predict(y[m], x, return_var=True)
+        sig = np.sqrt(var + yerr**2)
+
+        m0 = y - mu < 1.3 * sig
+        #print(m0.sum(), m.sum())
+        if np.all(m0 == m) or (np.abs(m0.sum()- m.sum()) < 3):
+            break
+        m = m0
+
+    fit_x, fit_y, fit_yerr = x[m], y[m], yerr[m]
+
+    gp.compute(fit_x, fit_yerr)
+    gp.log_likelihood(fit_y)   
+    gp.get_parameter_dict()
+    
+    # We want mu and var to be the same shape as the time array, need to interpolate
+    # since we downsampled
+    mu_interp = np.interp(time, time[::interval], mu)
+    var_interp = np.interp(time, time[::interval], var)
+    
+    return mu_interp, var_interp
+
+def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med', progCounter=False):
 
     FL_id = np.array([])
     FL_t0 = np.array([])
     FL_t1 = np.array([])
     FL_f0 = np.array([])
     FL_f1 = np.array([])
+    FL_ed = np.array([])
 
     for k in range(len(files)):
+        print(files[k])
         filename = files[k].split('/')[-1]
         acf_1dt = 0
 
@@ -47,7 +119,7 @@ def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progC
 
             median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
 
-            if doSpline:
+            if smoothType == 'spline':
                 smo = IRLSSpline(df_tbl['TIME'].values, df_tbl['PDCSAP_FLUX'].values/median,
                                  df_tbl['PDCSAP_FLUX_ERR'].values/median)
             else:
@@ -61,10 +133,16 @@ def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progC
                     acf_1pk = acf['autocorr'][1][mask][0]
                     s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
                 else:
+                    # Need to figure out a good default value for acf_1dt
+                    # If too large, it breaks the iterative gaussian process smoothing
                     s_window = 128
 
-                smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
-
+                if smoothType == 'roll_med':
+                    smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
+                elif smoothType == 'gauss_proc':
+                    print(acf_1dt)
+                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX'],
+                                            df_tbl['PDCSAP_FLUX_ERR'], acf_1dt)
 
             if makefig:
                 fig, axes = plt.subplots(figsize=(8,8))
@@ -94,6 +172,9 @@ def procFlares(files, sector, makefig=True, clobber=False, doSpline=False, progC
                 FL_f0 = np.append(FL_f0, median)
                 s1, s2 = FL[0][j], FL[1][j]+1
                 FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]))
+                ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2],
+                                  df_tbl['TIME'][sok_cut][s1:s2])
+                FL_ed = np.append(FL_ed, ed_val)
 
                 if makefig:
                     axes.scatter(df_tbl['TIME'][sok_cut][s1:s2],
