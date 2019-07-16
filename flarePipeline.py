@@ -15,7 +15,7 @@ from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=5):
     
     x = time[::interval]
     y = flux[::interval]
@@ -23,7 +23,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
     
     # A non-periodic component
     Q = 1.0 / np.sqrt(2.0)
-    w0 = period_guess
+    w0 = 3.0
     S0 = np.var(y) / (w0 * Q)
     bounds = dict(log_S0=(-20, 15), log_Q=(-15, 15), log_omega0=(-15, 15))
     kernel = terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
@@ -32,10 +32,13 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
 
     # A periodic component
     Q = 1.0
-    w0 = 3.0
+    w0 = 2*np.pi/period_guess
     S0 = np.var(y) / (w0 * Q)
     kernel += terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                             bounds=bounds)
+    
+    kernel += terms.JitterTerm(log_sigma=np.log(np.median(yerr)),
+                               bounds=[(-20.0, 5.0)])
 
     gp = celerite.GP(kernel, mean=np.mean(y))
     gp.compute(x, yerr)  # You always need to call compute once.
@@ -51,7 +54,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
     m = np.ones(len(x), dtype=bool)
-    for i in range(10):
+    for i in range(num_iter):
         gp.compute(x[m], yerr[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
                         method="L-BFGS-B", bounds=bounds, args=(y, gp, m))
@@ -65,7 +68,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=2):
 
         m0 = y - mu < 1.3 * sig
         #print(m0.sum(), m.sum())
-        if np.all(m0 == m) or (np.abs(m0.sum()- m.sum()) < 3):
+        if np.all(m0 == m) or (np.abs(m0.sum()- m.sum()) < 3)  or (m0.sum() == 0):
             break
         m = m0
 
@@ -133,16 +136,14 @@ def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med'
                     acf_1pk = acf['autocorr'][1][mask][0]
                     s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
                 else:
-                    # Need to figure out a good default value for acf_1dt
-                    # If too large, it breaks the iterative gaussian process smoothing
+                    acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
                     s_window = 128
 
                 if smoothType == 'roll_med':
                     smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
                 elif smoothType == 'gauss_proc':
-                    print(acf_1dt)
-                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX'],
-                                            df_tbl['PDCSAP_FLUX_ERR'], acf_1dt)
+                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                                            df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
 
             if makefig:
                 fig, axes = plt.subplots(figsize=(8,8))
