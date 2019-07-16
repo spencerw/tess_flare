@@ -85,6 +85,129 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=5):
     
     return mu_interp, var_interp
 
+def procFlaresGP(files, sector, makefig=True, clobber=False, progCounter=False):
+ 
+    FL_id = np.array([])
+    FL_t0 = np.array([])
+    FL_t1 = np.array([])
+    FL_f0 = np.array([])
+    FL_f1 = np.array([])
+    FL_ed = np.array([])
+
+    for k in range(len(files)):
+        filename = files[k].split('/')[-1]
+
+        with fits.open(files[k], mode='readonly') as hdulist:
+            tess_bjd = hdulist[1].data['TIME']
+            quality = hdulist[1].data['QUALITY']
+            pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
+            pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
+            
+        # Split data into segments, but put it all back together before doing GP regression
+        # We really just want to trim the edges of the segments here
+        dt_limit = 12/24 # 12 hours
+        trim = 4/24 # 4 hours
+        istart, istop = id_segments(tess_bjd, dt_limit, dt_trim=trim)
+        
+        tess_bjd_trim = np.array([])
+        quality_trim = np.array([])
+        pdcsap_flux_trim = np.array([])
+        pdcsap_flux_error_trim = np.array([])
+        
+        for seg_idx in range(len(istart)):
+            tess_bjd_seg = tess_bjd[istart[seg_idx]:istop[seg_idx]]
+            quality_seg = quality[istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_seg = pdcsap_flux[istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_error_seg = pdcsap_flux_error[istart[seg_idx]:istop[seg_idx]]
+            
+            tess_bjd_trim = np.concatenate((tess_bjd_trim, tess_bjd_seg), axis=0)
+            quality_trim = np.concatenate((quality_trim, quality_seg), axis=0)
+            pdcsap_flux_trim = np.concatenate((pdcsap_flux_trim, pdcsap_flux_seg), axis=0)
+            pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)
+            
+        ok_cut = quality_trim == 0
+        tbl = Table([tess_bjd_trim[ok_cut], pdcsap_flux_trim[ok_cut], pdcsap_flux_error_trim[ok_cut]], 
+                     names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
+        df_tbl = tbl.to_pandas()
+
+        median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
+
+        acf = xo.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
+                                    yerr=tbl['PDCSAP_FLUX_ERR']/median,
+                                    min_period=0.1, max_period=27, max_peaks=2)
+
+        if len(acf['peaks']) > 0:
+            acf_1dt = acf['peaks'][0]['period']
+            mask = np.where((acf['autocorr'][0] == acf['peaks'][0]['period']))[0]
+            acf_1pk = acf['autocorr'][1][mask][0]
+            s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
+        else:
+            acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
+            s_window = 128
+            
+        # GP smoothing takes a long time, save mu and var to an ascii file
+        gp_file = files[k] + '.gp'
+        if os.path.exists(gp_file):
+            smo, var = np.loadtxt(gp_file)
+        else:
+            smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
+            np.savetxt(gp_file, (smo, var))
+        
+        if makefig:
+            fig, axes = plt.subplots(figsize=(8,8))
+            axes.errorbar(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                          yerr=df_tbl['PDCSAP_FLUX_ERR']/median, 
+                          linestyle=None, alpha=0.15, label='PDCSAP_FLUX')
+
+        if np.sum(ok_cut) < 1000:
+            print('Warning: ' + f + ' contains < 1000 good points')
+
+        sok_cut = np.isfinite(smo)
+
+        FL = FINDflare((df_tbl['PDCSAP_FLUX'][sok_cut] - smo[sok_cut])/median, 
+                        df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
+                        avg_std=False, N1=4, N2=2, N3=5)
+
+        for j in range(len(FL[0])):
+            FL_id = np.append(FL_id, k)
+            FL_t0 = np.append(FL_t0, df_tbl['TIME'][sok_cut].values[FL[0][j]])
+            FL_t1 = np.append(FL_t1, df_tbl['TIME'][sok_cut].values[FL[1][j]])
+            FL_f0 = np.append(FL_f0, median)
+            s1, s2 = FL[0][j], FL[1][j]+1
+            FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]))
+            ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2],
+                              df_tbl['TIME'][sok_cut][s1:s2])
+            FL_ed = np.append(FL_ed, ed_val)
+
+            if makefig:
+                axes.scatter(df_tbl['TIME'][sok_cut][s1:s2],
+                             df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]/median,
+                             color='r', label='_nolegend_')
+                axes.scatter([],[], color='r', label='Flare?')
+                
+        if makefig: 
+            axes.set_xlabel('Time [BJD - 2457000, days]')
+            axes.set_ylabel('Normalized Flux')
+            axes.legend()
+            axes.set_title(filename)
+
+            figname = filename + '.jpeg'
+            makefig = ((not os.path.exists(figname)) | clobber)
+            plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
+            plt.close()      
+        
+        if progCounter:
+            update_progress(k / len(files))
+        
+    ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
+    print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
+    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
+                                   't0':FL_t0, 't1':FL_t1,
+                                   'med':FL_f0, 'peak':FL_f1})
+    flare_out.to_csv(sector+ '_flare_out.csv')
+
+
 def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med', progCounter=False):
 
     FL_id = np.array([])
@@ -95,9 +218,7 @@ def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med'
     FL_ed = np.array([])
 
     for k in range(len(files)):
-        print(files[k])
         filename = files[k].split('/')[-1]
-        acf_1dt = 0
 
         with fits.open(files[k], mode='readonly') as hdulist:
             tess_bjd = hdulist[1].data['TIME']
@@ -141,9 +262,6 @@ def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med'
 
                 if smoothType == 'roll_med':
                     smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
-                elif smoothType == 'gauss_proc':
-                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                            df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
 
             if makefig:
                 fig, axes = plt.subplots(figsize=(8,8))
