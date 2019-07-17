@@ -9,13 +9,14 @@ import os
 import celerite
 from celerite import terms
 from scipy.optimize import minimize
+import time
 
 from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
 
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=5):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
     
     x = time[::interval]
     y = flux[::interval]
@@ -43,36 +44,31 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=5):
     gp = celerite.GP(kernel, mean=np.mean(y))
     gp.compute(x, yerr)  # You always need to call compute once.
 
-    def neg_log_like(params, y, gp, m):
+    def neg_log_like(params, y, gp):
         gp.set_parameter_vector(params)
-        return -gp.log_likelihood(y[m])
+        return -gp.log_likelihood(y)
 
-    def grad_neg_log_like(params, y, gp, m):
+    def grad_neg_log_like(params, y, gp):
         gp.set_parameter_vector(params)
-        return -gp.grad_log_likelihood(y[m])[1]
+        return -gp.grad_log_likelihood(y)[1]
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
-    m = np.ones(len(x), dtype=bool)
+    pen = 100 # penalty factor to apply to outliers
+    yerr_rw = np.copy(yerr)
     for i in range(num_iter):
-        gp.compute(x[m], yerr[m])
+        gp.compute(x, yerr_rw)
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
-                        method="L-BFGS-B", bounds=bounds, args=(y, gp, m))
+                        method="L-BFGS-B", bounds=bounds, args=(y, gp))
         gp.set_parameter_vector(soln.x)
-    #     print(soln)
         initial_params = soln.x
-        # log_a, logQ1, mix_par, logQ2, log_P
-    #     print(initial_params)
-        mu, var = gp.predict(y[m], x, return_var=True)
+        mu, var = gp.predict(y, x, return_var=True)
         sig = np.sqrt(var + yerr**2)
 
-        m0 = y - mu < 1.3 * sig
-        #print(m0.sum(), m.sum())
-        if np.all(m0 == m) or (np.abs(m0.sum()- m.sum()) < 3)  or (m0.sum() == 0):
-            break
-        m = m0
-
-    fit_x, fit_y, fit_yerr = x[m], y[m], yerr[m]
+        chisq = (y - mu)**2/yerr**2
+        yerr_rw = 1/np.sqrt(pen/(yerr**2*(chisq + pen)))
+    
+    fit_x, fit_y, fit_yerr = x, y, yerr
 
     gp.compute(fit_x, fit_yerr)
     gp.log_likelihood(fit_y)   
@@ -85,7 +81,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=10, num_iter=5):
     
     return mu_interp, var_interp
 
-def procFlaresGP(files, sector, makefig=True, clobber=False, progCounter=False):
+def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False):
  
     FL_id = np.array([])
     FL_t0 = np.array([])
@@ -93,8 +89,17 @@ def procFlaresGP(files, sector, makefig=True, clobber=False, progCounter=False):
     FL_f0 = np.array([])
     FL_f1 = np.array([])
     FL_ed = np.array([])
+    
+    failed_files = []
+    
+    if writeLog:
+        if os.path.exists(sector + '.log'):
+            os.remove(sector + '.log')
+            with open(sector+'.log', 'a') as f:
+                f.write('{:^10}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + '\n')
 
     for k in range(len(files)):
+        start_time = time.time()
         filename = files[k].split('/')[-1]
 
         with fits.open(files[k], mode='readonly') as hdulist:
@@ -147,12 +152,19 @@ def procFlaresGP(files, sector, makefig=True, clobber=False, progCounter=False):
             
         # GP smoothing takes a long time, save mu and var to an ascii file
         gp_file = files[k] + '.gp'
-        if os.path.exists(gp_file):
+        if os.path.exists(gp_file) and  not clobberGP:
             smo, var = np.loadtxt(gp_file)
         else:
-            smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
-            np.savetxt(gp_file, (smo, var))
+            try:
+                smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
+                np.savetxt(gp_file, (smo, var))
+            # If GP regression fails, skip over this light curve and list it at the
+            # end of the log file
+            except celerite.solver.LinAlgError:
+                print(files[k].split('/')[-1] + ' failed during GP regression')
+                failed_files.append(files[k].split('/')[-1])
+                continue
         
         if makefig:
             fig, axes = plt.subplots(figsize=(8,8))
@@ -193,18 +205,29 @@ def procFlaresGP(files, sector, makefig=True, clobber=False, progCounter=False):
             axes.set_title(filename)
 
             figname = filename + '.jpeg'
-            makefig = ((not os.path.exists(figname)) | clobber)
+            makefig = ((not os.path.exists(figname)) | clobberPlots)
             plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
             plt.close()      
         
-        if progCounter:
-            update_progress(k / len(files))
+        if writeLog:
+            with open(sector+'.log', 'a') as f:
+                time_elapsed = time.time() - start_time
+                
+                f.write('{:^10}'.format(str(k+1) + '/' + str(len(files))) + \
+                        '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + '\n')
         
     ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
+    print(str(len(failed_files)) + ' light curves failed')
+    if writeLog:
+        with open(sector+'.log', 'a') as f:
+            f.write('\n')
+            for fname in failed_files:
+                f.write(fname + ' failed during GP regression\n')
+                
     flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
                                    't0':FL_t0, 't1':FL_t1,
-                                   'med':FL_f0, 'peak':FL_f1})
+                                   'med':FL_f0, 'peak':FL_f1, 'ed':FL_ed})
     flare_out.to_csv(sector+ '_flare_out.csv')
 
 
@@ -319,5 +342,5 @@ def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med'
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
     flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
                                    't0':FL_t0, 't1':FL_t1,
-                                   'med':FL_f0, 'peak':FL_f1})
+                                   'med':FL_f0, 'peak':FL_f1, 'ed':FL_ed})
     flare_out.to_csv(sector+ '_flare_out.csv')
