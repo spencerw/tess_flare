@@ -96,7 +96,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if os.path.exists(sector + '.log'):
             os.remove(sector + '.log')
             with open(sector+'.log', 'a') as f:
-                f.write('{:^10}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + '\n')
+                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + '\n')
 
     for k in range(len(files)):
         start_time = time.time()
@@ -152,7 +152,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
         # GP smoothing takes a long time, save mu and var to an ascii file
         gp_file = files[k] + '.gp'
-        if os.path.exists(gp_file) and  not clobberGP:
+        print(gp_file)
+        if os.path.exists(gp_file) and not clobberGP:
             smo, var = np.loadtxt(gp_file)
         else:
             try:
@@ -163,6 +164,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             # end of the log file
             except celerite.solver.LinAlgError:
                 print(files[k].split('/')[-1] + ' failed during GP regression')
+                failed_files.append(files[k].split('/')[-1])
+                continue
+            except ValueError:
+                print(files[k].split('/')[-1] + ' failed during GP prior')
                 failed_files.append(files[k].split('/')[-1])
                 continue
         
@@ -213,7 +218,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             with open(sector+'.log', 'a') as f:
                 time_elapsed = time.time() - start_time
                 
-                f.write('{:^10}'.format(str(k+1) + '/' + str(len(files))) + \
+                f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
                         '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + '\n')
         
     ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
