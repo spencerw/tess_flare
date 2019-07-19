@@ -7,4 +7,4 @@ path = '/astro/store/gradscratch/tmp/scw7/tessData/lightcurves/sec'+sector+'/'
 
 all_files = gl.glob(path+'*.fits')
 
-procFlaresGP(all_files, sector + '.gauss', makefig=False, clobberPlots=True, clobberGP=False, writeLog=True)
+procFlaresGP(all_files, sector + '.gauss', makefig=True, clobberPlots=True, clobberGP=True, writeLog=True)

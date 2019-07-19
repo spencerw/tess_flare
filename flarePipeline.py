@@ -2,6 +2,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.table import Table
+from astropy.stats import LombScargle
 import pandas as pd
 import numpy as np
 import exoplanet as xo
@@ -54,7 +55,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
-    pen = 100 # penalty factor to apply to outliers
+    pen = 0.2 # penalty factor to apply to outliers
     yerr_rw = np.copy(yerr)
     for i in range(num_iter):
         gp.compute(x, yerr_rw)
@@ -81,7 +82,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
     
     return mu_interp, var_interp
 
-def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False):
+def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=500):
  
     FL_id = np.array([])
     FL_t0 = np.array([])
@@ -152,13 +153,29 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
         # GP smoothing takes a long time, save mu and var to an ascii file
         gp_file = files[k] + '.gp'
-        print(gp_file)
         if os.path.exists(gp_file) and not clobberGP:
             smo, var = np.loadtxt(gp_file)
         else:
             try:
                 smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt)
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=50)
+                
+                # If the data - smoothed GP curve still has periodicity, re-run the GP regression
+                # with less downsampling
+                freq = np.linspace(1e-2, 100.0, 10000)
+                x = df_tbl['TIME']
+                y = df_tbl['PDCSAP_FLUX']/median - smo
+                model = LombScargle(x, y)
+                power = model.power(freq, method='fast', normalization='psd')
+                power /= len(x)
+                period = 1.0 / freq[np.argmax(power)]
+                p_signal = np.max(power)/np.median(power)
+                
+                if (p_signal > 100):
+                    print('Reduce GP regression downsampling for ' + files[k].split('/')[-1])
+                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=10)
+                
                 np.savetxt(gp_file, (smo, var))
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file
@@ -182,11 +199,12 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
 
         sok_cut = np.isfinite(smo)
 
-        FL = FINDflare((df_tbl['PDCSAP_FLUX'][sok_cut] - smo[sok_cut])/median, 
+        FL = FINDflare(df_tbl['PDCSAP_FLUX'][sok_cut]/median - smo[sok_cut], 
                         df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
-                        avg_std=False, N1=4, N2=2, N3=5)
+                        avg_std=True, std_window=1000, N1=4, N2=2, N3=5)
 
         for j in range(len(FL[0])):
+            print('flare detected')
             FL_id = np.append(FL_id, k)
             FL_t0 = np.append(FL_t0, df_tbl['TIME'][sok_cut].values[FL[0][j]])
             FL_t1 = np.append(FL_t1, df_tbl['TIME'][sok_cut].values[FL[1][j]])
@@ -209,7 +227,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             axes.legend()
             axes.set_title(filename)
 
-            figname = filename + '.jpeg'
+            figname = files[k] + '.jpeg'
             makefig = ((not os.path.exists(figname)) | clobberPlots)
             plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
             plt.close()      
@@ -221,7 +239,15 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
                         '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + '\n')
         
-    ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
+        # Periodically write to the flare table file
+        if (k % writeDFinterval) == 0 or (k+1) == len(files):
+            ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
+            flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:k]],
+                                   't0':FL_t0[:k], 't1':FL_t1[:k],
+                                   'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k]})
+            print(flare_out)
+            flare_out.to_csv(sector+ '_flare_out.csv')
+        
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
     print(str(len(failed_files)) + ' light curves failed')
     if writeLog:
@@ -229,12 +255,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             f.write('\n')
             for fname in failed_files:
                 f.write(fname + ' failed during GP regression\n')
-                
-    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
-                                   't0':FL_t0, 't1':FL_t1,
-                                   'med':FL_f0, 'peak':FL_f1, 'ed':FL_ed})
-    flare_out.to_csv(sector+ '_flare_out.csv')
-
 
 def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med', progCounter=False):
 
