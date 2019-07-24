@@ -223,12 +223,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             print('Warning: ' + f + ' contains < 1000 good points')
 
         sok_cut = np.isfinite(smo)
-
-        # Do something smarter with the std_window here. I could use the width
-        # of the first peak of the autocorrelation function to set the size
+        
         FL = FINDflare(df_tbl['PDCSAP_FLUX'][sok_cut]/median - smo[sok_cut], 
                         df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
-                        avg_std=True, std_window=1000, N1=4, N2=2, N3=5)
+                        avg_std=True, std_window=s_window, N1=4, N2=2, N3=5)
 
         for j in range(len(FL[0])):
             print('flare detected')
