@@ -107,7 +107,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
     gp.compute(time, yerr_rw_interp)
     mu, var = gp.predict(flux/median, time, return_var=True)
     
-    return mu, var
+    return mu, var, gp.get_parameter_dict()
 
 def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=500):
  
@@ -177,12 +177,13 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             s_window = 128
             
         # GP smoothing takes a long time, save mu and var to an ascii file
-        gp_file = files[k] + '.gp'
-        if os.path.exists(gp_file) and not clobberGP:
-            smo, var = np.loadtxt(gp_file)
+        gp_data_file = files[k] + '.gp'
+        gp_param_file = files[k] + '.gp.par'
+        if os.path.exists(gp_data_file) and not clobberGP:
+            smo, var = np.loadtxt(gp_data_file)
         else:
             try:
-                smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
                                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=50)
                 
                 # If the data - smoothed GP curve still has periodicity, re-run the GP regression
@@ -199,9 +200,14 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 if (p_signal > 50):
                     print('Reduce GP regression downsampling for ' + files[k].split('/')[-1])
                     smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=10)
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=3)
                 
-                np.savetxt(gp_file, (smo, var))
+                np.savetxt(gp_data_file, (smo, var))
+                
+                # Write out the best fit kernel parameters to a file
+                with open(gp_param_file, 'wb') as outfile:
+                    pickle.dump(params, outfile, protocol=pickle.HIGHEST_PROTOCOL)
+                    
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file
             except celerite.solver.LinAlgError:
