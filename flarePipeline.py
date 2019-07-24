@@ -17,11 +17,29 @@ from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
     
-    x = time[::interval]
-    y = flux[::interval]
-    yerr = flux_err[::interval]
+    # Start by downsampling the data before doing GP regression
+    # Using an interval of 15 takes us from 2 minute to 30 minute cadence
+    x = np.empty(len(time)//interval)
+    y = np.empty(len(flux)//interval)
+    yerr = np.empty(len(error)//interval)
+
+    # Calculate the average of every interval of points
+    for idx in range(len(x)):
+        i1 = idx*interval
+        i2 = (idx+1)*interval
+        if i2 > len(time)-1:
+            i2 = len(time)-1
+        x[idx] = np.mean(time[i1:i2])
+        y[idx] = np.mean(flux[i1:i2])/median
+        yerr[idx] = np.mean(error[i1:i2])/median
+    
+    # Here is the kernel we will use for the GP regression
+    # It consists of a sum of two stochastically driven damped harmonic
+    # oscillators. One of the terms has Q fixed at 1/sqrt(2), which
+    # forces it to be non-periodic. There is also a white noise term
+    # included.
     
     # A non-periodic component
     Q = 1.0 / np.sqrt(2.0)
@@ -30,7 +48,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
     bounds = dict(log_S0=(-20, 15), log_Q=(-15, 15), log_omega0=(-15, 15))
     kernel = terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                            bounds=bounds)
-    kernel.freeze_parameter("log_Q")  # We don't want to fit for "Q" in this term
+    kernel.freeze_parameter('log_Q')
 
     # A periodic component
     Q = 1.0
@@ -39,11 +57,14 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
     kernel += terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                             bounds=bounds)
     
+    # White noise component
     kernel += terms.JitterTerm(log_sigma=np.log(np.median(yerr)),
                                bounds=[(-20.0, 5.0)])
 
+    # Now calculate the covariance matrix using the initial
+    # kernel parameters
     gp = celerite.GP(kernel, mean=np.mean(y))
-    gp.compute(x, yerr)  # You always need to call compute once.
+    gp.compute(x, yerr)
 
     def neg_log_like(params, y, gp):
         gp.set_parameter_vector(params)
@@ -55,12 +76,22 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
-    pen = 0.2 # penalty factor to apply to outliers
+    
+    # Find the best fit kernel parameters. We want to try to ignore the flares
+    # when we do the fit. To do this, we will repeatedly find the best fit
+    # solution to the kernel model, calculate the covariance matrix, predict
+    # the flux and then re-weight points based on how far they deviate from
+    # the model. After a few passes, this should cause the model to fit mostly
+    # to periodic features.
+    #
+    # This method still systematically produces a small 'bump' in the model under
+    # the flare. Need to figure out a way to get rid of this.
+    pen = 40 # penalty factor to apply to outliers
     yerr_rw = np.copy(yerr)
     for i in range(num_iter):
         gp.compute(x, yerr_rw)
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
-                        method="L-BFGS-B", bounds=bounds, args=(y, gp))
+                        method='L-BFGS-B', bounds=bounds, args=(y, gp))
         gp.set_parameter_vector(soln.x)
         initial_params = soln.x
         mu, var = gp.predict(y, x, return_var=True)
@@ -68,19 +99,15 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=50, num_iter=5):
 
         chisq = (y - mu)**2/yerr**2
         yerr_rw = 1/np.sqrt(pen/(yerr**2*(chisq + pen)))
+        
+    # Now that we have the best fit parameters for the kernel, go back and calculate
+    # the covariance matrix for the original light curve. Linearly interpolate to get
+    # the reweighted error bars (to ignore flares)
+    yerr_rw_interp = np.interp(time, x, yerr_rw)
+    gp.compute(time, yerr_rw_interp)
+    mu, var = gp.predict(flux/median, time, return_var=True)
     
-    fit_x, fit_y, fit_yerr = x, y, yerr
-
-    gp.compute(fit_x, fit_yerr)
-    gp.log_likelihood(fit_y)   
-    gp.get_parameter_dict()
-    
-    # We want mu and var to be the same shape as the time array, need to interpolate
-    # since we downsampled
-    mu_interp = np.interp(time, time[::interval], mu)
-    var_interp = np.interp(time, time[::interval], var)
-    
-    return mu_interp, var_interp
+    return mu, var
 
 def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=500):
  
@@ -109,30 +136,28 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
             pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
             
+        ok_cut = quality == 0
+            
         # Split data into segments, but put it all back together before doing GP regression
         # We really just want to trim the edges of the segments here
         dt_limit = 12/24 # 12 hours
         trim = 4/24 # 4 hours
-        istart, istop = id_segments(tess_bjd, dt_limit, dt_trim=trim)
+        istart, istop = id_segments(tess_bjd[ok_cut], dt_limit, dt_trim=trim)
         
         tess_bjd_trim = np.array([])
-        quality_trim = np.array([])
         pdcsap_flux_trim = np.array([])
         pdcsap_flux_error_trim = np.array([])
         
         for seg_idx in range(len(istart)):
-            tess_bjd_seg = tess_bjd[istart[seg_idx]:istop[seg_idx]]
-            quality_seg = quality[istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_seg = pdcsap_flux[istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_error_seg = pdcsap_flux_error[istart[seg_idx]:istop[seg_idx]]
+            tess_bjd_seg = tess_bjd[ok_cut][istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_seg = pdcsap_flux[ok_cut][istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_error_seg = pdcsap_flux_error[ok_cut][istart[seg_idx]:istop[seg_idx]]
             
             tess_bjd_trim = np.concatenate((tess_bjd_trim, tess_bjd_seg), axis=0)
-            quality_trim = np.concatenate((quality_trim, quality_seg), axis=0)
             pdcsap_flux_trim = np.concatenate((pdcsap_flux_trim, pdcsap_flux_seg), axis=0)
             pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)
             
-        ok_cut = quality_trim == 0
-        tbl = Table([tess_bjd_trim[ok_cut], pdcsap_flux_trim[ok_cut], pdcsap_flux_error_trim[ok_cut]], 
+        tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
                      names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
         df_tbl = tbl.to_pandas()
 
@@ -171,7 +196,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 period = 1.0 / freq[np.argmax(power)]
                 p_signal = np.max(power)/np.median(power)
                 
-                if (p_signal > 100):
+                if (p_signal > 50):
                     print('Reduce GP regression downsampling for ' + files[k].split('/')[-1])
                     smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
                                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=10)
@@ -199,6 +224,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
 
         sok_cut = np.isfinite(smo)
 
+        # Do something smarter with the std_window here. I could use the width
+        # of the first peak of the autocorrelation function to set the size
         FL = FINDflare(df_tbl['PDCSAP_FLUX'][sok_cut]/median - smo[sok_cut], 
                         df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
                         avg_std=True, std_window=1000, N1=4, N2=2, N3=5)
@@ -273,19 +300,19 @@ def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med'
             quality = hdulist[1].data['QUALITY']
             pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
             pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
-            
+        
+        ok_cut = quality == 0
+        
         # Split data into segments
         dt_limit = 12/24 # 12 hours
         trim = 4/24 # 4 hours
-        istart, istop = id_segments(tess_bjd, dt_limit, dt_trim=trim)
+        istart, istop = id_segments(tess_bjd[ok_cut], dt_limit, dt_trim=trim)
         for seg_idx in range(len(istart)):
-            tess_bjd_seg = tess_bjd[istart[seg_idx]:istop[seg_idx]]
-            quality_seg = quality[istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_seg = pdcsap_flux[istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_error_seg = pdcsap_flux_error[istart[seg_idx]:istop[seg_idx]]
+            tess_bjd_seg = tess_bjd[ok_cut][istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_seg = pdcsap_flux[ok_cut][istart[seg_idx]:istop[seg_idx]]
+            pdcsap_flux_error_seg = pdcsap_flux_error[ok_cut][istart[seg_idx]:istop[seg_idx]]
             
-            ok_cut = quality_seg == 0
-            tbl = Table([tess_bjd_seg[ok_cut], pdcsap_flux_seg[ok_cut], pdcsap_flux_error_seg[ok_cut]], 
+            tbl = Table([tess_bjd_seg, pdcsap_flux_seg, pdcsap_flux_error_seg], 
                          names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
             df_tbl = tbl.to_pandas()
 
