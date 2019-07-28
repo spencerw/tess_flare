@@ -9,11 +9,11 @@ import exoplanet as xo
 import os
 import celerite
 from celerite import terms
-from scipy.optimize import minimize
+from scipy.optimize import minimize, curve_fit
 import time
 import pickle
 
-from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
+from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, aflare1
 
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
@@ -116,6 +116,110 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
     
     return mu, var, gp.get_parameter_dict()
 
+def gaussian(x, mu, sigma, A):
+    return A/np.sqrt(2*np.pi*sigma**2)*np.exp(-(x - mu)**2/sigma**2/2)
+
+def redChiSq(y_model, ydata, yerr, dof):
+    chi2 = np.sum((ydata - y_model)**2/yerr**2)/dof
+    return chi2
+
+def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
+    '''
+    Given a flare detection, try to fit a gaussian and a flare model from
+    Davenport 2014 to the light curve segment. If the reduced chi squared
+    for the gaussian is smaller, this is likely not a flare.
+    Parameters
+    ----------
+    x : numpy array
+        time values from the entire light curve
+    y : numpy array
+        flux values from the entire light curve
+    yerr : numpy array
+        error in the flux values
+    tstart : float
+        Start time of the flare detection
+    tstop : float
+        End time of the flare detection
+    dx_fac : float, optional
+        Factor by which to expand the flare window when fitting a model
+    Returns
+    -------
+        isFlare - Did the flare model fit better than the gaussian?
+        popt - Best fit parameters for the flare model
+        pstd - Error on the best fit parameters
+        chi - Reduced chi squared of fit
+    '''
+    # Use a segment of the light curve that is dx_fac times the width of the flare detection
+    dx = tstop - tstart
+    x1 = tstart - dx*dx_fac/2
+    x2 = tstop + dx*dx_fac/2
+    mask = (x > x1) & (x < x2)
+    
+    mu0 = (tstart + tstop)/2
+    sig0 = (tstop - tstart)/2
+    A0 = 1
+
+    # Fit a gaussian to the segment
+    popt1, pcov1 = curve_fit(gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+    y_model = gaussian(x[mask], popt1[0], popt1[1], popt1[2])
+    c1 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    
+    # Fit the Davenport 2014 flare model to the segment
+    popt2, pcov2 = curve_fit(aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+    y_model = aflare1(x[mask], popt2[0], popt2[1], popt2[2])
+    c2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    
+    isFlare = True
+    chi = c2
+    popt = popt2
+    pcov = pcov2
+    
+    # A better fit with the gaussian indicates that this is likely not a flare
+    if c1 < c2:
+        isFlare = False
+        chi = c1
+        popt = popt1
+        pcov = pcov2
+    
+    return isFlare, popt, np.sqrt(pcov.diagonal()), chi
+
+def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
+    '''
+    Measure the equivalent duration of a flare in a smoothed light
+    curve. FINDflare typically doesnt identify the entire flare, so
+    integrate num_fwhm/2 away from the peak. As long as the light curve
+    is flat away from the flare, the region around the flare should
+    not significantly contribute.
+    Parameters
+    ----------
+    x : numpy array
+        time values from the entire light curve
+    y : numpy array
+        flux values from the entire light curve
+    yerr : numpy array
+        error in the flux values
+    tpeak : float
+        Peak time of the flare detection
+    fwhm : float
+        Full-width half maximum of the flare
+    num_fwhm : float, optional
+        Size of the integration window in units of fwhm
+    Returns
+    -------
+        ED - Equivalent duration of the flare
+        ED_err - The uncertainty in the equivalent duration
+    '''
+    width = fwhm*num_fwhm
+    istart = np.argwhere(x > tpeak - width/2)[0]
+    ipeak = np.argwhere(x > tpeak)[0]
+    istop = np.argwhere(x > tpeak + width/2)[0]
+    
+    mask = (x > x[istart]) & (x < x[istop])
+    ED = np.trapz(y[mask], x[mask])
+    ED_err = np.sqrt(np.trapz(yerr[mask], x[mask])**2)
+    
+    return ED, ED_err
+
 def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False):
  
     FL_id = np.array([])
@@ -124,6 +228,14 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     FL_f0 = np.array([])
     FL_f1 = np.array([])
     FL_ed = np.array([])
+    FL_ed_err = np.array([])
+    FL_tpeak = np.array([])
+    FL_fwhm = np.array([])
+    FL_amp = np.array([])
+    FL_tpeak_err = np.array([])
+    FL_fwhm_err = np.array([])
+    FL_amp_err = np.array([])
+    FL_chisq = np.array([])
     
     failed_files = []
     
@@ -131,7 +243,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if os.path.exists(sector + '.log'):
             os.remove(sector + '.log')
             with open(sector+'.log', 'a') as f:
-                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + ' reduced downsample?' + '\n')
+                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:20}'.format('time (s)') + '{:10}'.format('resample?') + '{:10}'.format('flares found') + '\n')
 
     for k in range(len(files)):
         start_time = time.time()
@@ -270,20 +382,55 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
         print('Find flares', flush=True)
         
+        # Search for flares in the smoothed light curve using change point analysis
         FL = FINDflare(df_tbl['PDCSAP_FLUX']/median - smo, 
                         df_tbl['PDCSAP_FLUX_ERR']/median,
                         avg_std=True, std_window=s_window, N1=4, N2=2, N3=5)
 
         for j in range(len(FL[0])):
+            if debug:
+                print('Found a flare, fitting model to it')
+            
+            # Try to fit a flare model to the detection
+            tstart = df_tbl['TIME'].values[FL[0][j]]
+            tstop = df_tbl['TIME'].values[FL[1][j]]
+            x = np.array(df_tbl['TIME'])
+            y = np.array(df_tbl['PDCSAP_FLUX']/median - smo)
+            yerr =  np.array(df_tbl['PDCSAP_FLUX_ERR']/median)
+            isFlare, popt, pstd, chisq = vetFlare(x, y, yerr, tstart, tstop)
+            
+            # If flare is gaussian, reject it
+            if not isFlare:
+                if debug:
+                    print('Flare is gaussian, throw it out')
+                continue
+                
+            tpeak, fwhm, amp = popt[0], popt[1], popt[2]
+            tpeak_err, fwhm_err, amp_err = pstd[0], pstd[1], pstd[2]
+            
+            if debug:
+                print('Flare model fit, measuring ED')
+            
+            # Now that we have a flare model, measure the equivalent duration
+            # Should I propogate the uncertainties in the model parameters through?
+            ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
+            
             FL_id = np.append(FL_id, k)
-            FL_t0 = np.append(FL_t0, df_tbl['TIME'].values[FL[0][j]])
-            FL_t1 = np.append(FL_t1, df_tbl['TIME'].values[FL[1][j]])
+            FL_t0 = np.append(FL_t0, tstart)
+            FL_t1 = np.append(FL_t1, tstop)
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
-            ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][s1:s2],
-                              df_tbl['TIME'][s1:s2])
-            FL_ed = np.append(FL_ed, ed_val)
+            FL_ed = np.append(FL_ed, ED)
+            FL_ed_err = np.append(FL_ed_err, ED_err)
+            
+            FL_tpeak = np.append(FL_tpeak, tpeak)
+            FL_fwhm = np.append(FL_fwhm, fwhm)
+            FL_amp = np.append(FL_amp, amp)
+            FL_tpeak_err = np.append(FL_tpeak_err, tpeak_err)
+            FL_fwhm_err = np.append(FL_fwhm_err, fwhm_err)
+            FL_amp_err = np.append(FL_amp_err, amp_err)
+            FL_chisq = np.append(FL_chisq, chisq)
 
             if makefig:
                 axes.scatter(df_tbl['TIME'][s1:s2],
@@ -312,9 +459,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 ds_str = 'N'
                 if red_downsample:
                     ds_str = 'Y'
+                num_flares = len(FL[0])
                 
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
-                        '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + ' ' + '{:>3}'.format(ds_str) + '\n')
+                        '{:<60}'.format(files[k].split('/')[-1]) + '{:<20}'.format(time_elapsed) + ' ' + '{:<10}'.format(ds_str) + '{:<10}'.format(num_flares) + '\n')
                 
         if debug:
             print('Write to flare table', flush=True)
@@ -324,7 +472,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
             flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:k]],
                                    't0':FL_t0[:k], 't1':FL_t1[:k],
-                                   'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k]})
+                                   'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k], 'ed_err':FL_ed_err[:k],
+                                   'tpeak': FL_tpeak[:k], 'fwhm': FL_fwhm[:k], 'amp': FL_amp[:k],
+                                   'tpeak_err': FL_tpeak_err[:k], 'fwhm_err': FL_fwhm_err[:k],
+                                   'amp_err': FL_amp_err[:k], 'chisq': FL_chisq[:k]})
             flare_out.to_csv(sector+ '_flare_out.csv')
         
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
