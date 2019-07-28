@@ -323,6 +323,13 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if os.path.exists(gp_data_file) and not clobberGP:
             if debug:
                 print('GP file exists, loading', flush=True)
+                
+            # Failed GP regression will produce an empty file
+            if os.path.getsize(gp_data_file) == 0:
+                print(files[k].split('/')[-1] + ' failed (previously) during GP regression', flush=True)
+                failed_files.append(files[k].split('/')[-1])
+                continue
+                
             smo, var = np.loadtxt(gp_data_file)
         else:
             try:
