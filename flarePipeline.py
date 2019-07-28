@@ -11,19 +11,23 @@ import celerite
 from celerite import terms
 from scipy.optimize import minimize
 import time
+import pickle
 
 from flareTools import FINDflare, IRLSSpline, id_segments, update_progress
 
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, debug=False):
     
     # Start by downsampling the data before doing GP regression
     # Using an interval of 15 takes us from 2 minute to 30 minute cadence
     x = np.empty(len(time)//interval)
     y = np.empty(len(flux)//interval)
-    yerr = np.empty(len(error)//interval)
+    yerr = np.empty(len(flux_err)//interval)
+    
+    if debug:
+        print('Run iterative GP regression with i=' + str(interval) + ' (' + str(len(x)) + ' points)', flush=True)
 
     # Calculate the average of every interval of points
     for idx in range(len(x)):
@@ -32,8 +36,8 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
         if i2 > len(time)-1:
             i2 = len(time)-1
         x[idx] = np.mean(time[i1:i2])
-        y[idx] = np.mean(flux[i1:i2])/median
-        yerr[idx] = np.mean(error[i1:i2])/median
+        y[idx] = np.mean(flux[i1:i2])
+        yerr[idx] = np.mean(flux_err[i1:i2])
     
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
@@ -77,6 +81,9 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
     
+    if debug:
+        print(initial_params, flush=True)
+    
     # Find the best fit kernel parameters. We want to try to ignore the flares
     # when we do the fit. To do this, we will repeatedly find the best fit
     # solution to the kernel model, calculate the covariance matrix, predict
@@ -105,11 +112,11 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5):
     # the reweighted error bars (to ignore flares)
     yerr_rw_interp = np.interp(time, x, yerr_rw)
     gp.compute(time, yerr_rw_interp)
-    mu, var = gp.predict(flux/median, time, return_var=True)
+    mu, var = gp.predict(flux, time, return_var=True)
     
     return mu, var, gp.get_parameter_dict()
 
-def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=500):
+def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False):
  
     FL_id = np.array([])
     FL_t0 = np.array([])
@@ -124,11 +131,16 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if os.path.exists(sector + '.log'):
             os.remove(sector + '.log')
             with open(sector+'.log', 'a') as f:
-                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + '\n')
+                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:>10}'.format('time (s)') + ' reduced downsample?' + '\n')
 
     for k in range(len(files)):
         start_time = time.time()
         filename = files[k].split('/')[-1]
+        
+        red_downsample = False
+        
+        if debug:
+            print('Open ' + files[k], flush=True)
 
         with fits.open(files[k], mode='readonly') as hdulist:
             tess_bjd = hdulist[1].data['TIME']
@@ -138,6 +150,9 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
         ok_cut = quality == 0
             
+        if debug:
+            print('Find segments', flush=True)
+        
         # Split data into segments, but put it all back together before doing GP regression
         # We really just want to trim the edges of the segments here
         dt_limit = 12/24 # 12 hours
@@ -162,6 +177,9 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         df_tbl = tbl.to_pandas()
 
         median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
+        
+        if debug:
+            print('Estimate periods', flush=True)
 
         acf = xo.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
                                     yerr=tbl['PDCSAP_FLUX_ERR']/median,
@@ -176,15 +194,30 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
             s_window = 128
             
+        # Save the median and s_window values
+        param_file = files[k] + '.param'
+        np.savetxt(param_file, (median, s_window, acf_1dt))
+        
+        # Save the time, fluxes and flux errors after cutting data
+        clean_data_file = files[k] + '.clean'
+        np.savetxt(clean_data_file, (df_tbl['TIME'], df_tbl['PDCSAP_FLUX'], df_tbl['PDCSAP_FLUX_ERR']))
+        
+        if debug:
+            print('GP smoothing', flush=True)
+            
         # GP smoothing takes a long time, save mu and var to an ascii file
         gp_data_file = files[k] + '.gp'
         gp_param_file = files[k] + '.gp.par'
         if os.path.exists(gp_data_file) and not clobberGP:
+            if debug:
+                print('GP file exists, loading', flush=True)
             smo, var = np.loadtxt(gp_data_file)
         else:
             try:
+                if debug:
+                    print('No GP file found, running GP regression', flush=True)
                 smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=50)
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=15, debug=debug)
                 
                 # If the data - smoothed GP curve still has periodicity, re-run the GP regression
                 # with less downsampling
@@ -198,10 +231,15 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 p_signal = np.max(power)/np.median(power)
                 
                 if (p_signal > 50):
-                    print('Reduce GP regression downsampling for ' + files[k].split('/')[-1])
-                    smo, var = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=3)
+                    if debug:
+                        print('Reduce GP regression downsampling', flush=True)
+                    red_downsample = True
+                    smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=3, debug=debug)
                 
+                if debug:
+                    print('GP regression finished, saving results to file', flush=True)
+                    
                 np.savetxt(gp_data_file, (smo, var))
                 
                 # Write out the best fit kernel parameters to a file
@@ -209,14 +247,16 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                     pickle.dump(params, outfile, protocol=pickle.HIGHEST_PROTOCOL)
                     
             # If GP regression fails, skip over this light curve and list it at the
-            # end of the log file
+            # end of the log file. Write out an empty .gp file
             except celerite.solver.LinAlgError:
-                print(files[k].split('/')[-1] + ' failed during GP regression')
+                print(files[k].split('/')[-1] + ' failed during GP regression', flush=True)
                 failed_files.append(files[k].split('/')[-1])
+                np.savetxt(gp_data_file, ([]))
                 continue
             except ValueError:
-                print(files[k].split('/')[-1] + ' failed during GP prior')
+                print(files[k].split('/')[-1] + ' failed during GP prior', flush=True)
                 failed_files.append(files[k].split('/')[-1])
+                np.savetxt(gp_data_file, ([]))
                 continue
         
         if makefig:
@@ -226,29 +266,28 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                           linestyle=None, alpha=0.15, label='PDCSAP_FLUX')
 
         if np.sum(ok_cut) < 1000:
-            print('Warning: ' + f + ' contains < 1000 good points')
-
-        sok_cut = np.isfinite(smo)
+            print('Warning: ' + f + ' contains < 1000 good points', flush=True)
+            
+        print('Find flares', flush=True)
         
-        FL = FINDflare(df_tbl['PDCSAP_FLUX'][sok_cut]/median - smo[sok_cut], 
-                        df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
+        FL = FINDflare(df_tbl['PDCSAP_FLUX']/median - smo, 
+                        df_tbl['PDCSAP_FLUX_ERR']/median,
                         avg_std=True, std_window=s_window, N1=4, N2=2, N3=5)
 
         for j in range(len(FL[0])):
-            print('flare detected')
             FL_id = np.append(FL_id, k)
-            FL_t0 = np.append(FL_t0, df_tbl['TIME'][sok_cut].values[FL[0][j]])
-            FL_t1 = np.append(FL_t1, df_tbl['TIME'][sok_cut].values[FL[1][j]])
+            FL_t0 = np.append(FL_t0, df_tbl['TIME'].values[FL[0][j]])
+            FL_t1 = np.append(FL_t1, df_tbl['TIME'].values[FL[1][j]])
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
-            FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]))
-            ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2],
-                              df_tbl['TIME'][sok_cut][s1:s2])
+            FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
+            ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][s1:s2],
+                              df_tbl['TIME'][s1:s2])
             FL_ed = np.append(FL_ed, ed_val)
 
             if makefig:
-                axes.scatter(df_tbl['TIME'][sok_cut][s1:s2],
-                             df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]/median,
+                axes.scatter(df_tbl['TIME'][s1:s2],
+                             df_tbl['PDCSAP_FLUX'][s1:s2]/median,
                              color='r', label='_nolegend_')
                 axes.scatter([],[], color='r', label='Flare?')
                 
@@ -261,22 +300,31 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             figname = files[k] + '.jpeg'
             makefig = ((not os.path.exists(figname)) | clobberPlots)
             plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
-            plt.close()      
+            plt.close()
         
         if writeLog:
+            if debug:
+                print('Write to logfile', flush=True)
+            
             with open(sector+'.log', 'a') as f:
                 time_elapsed = time.time() - start_time
                 
+                ds_str = 'N'
+                if red_downsample:
+                    ds_str = 'Y'
+                
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
-                        '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + '\n')
+                        '{:60}'.format(files[k].split('/')[-1]) + '{:>10}'.format(time_elapsed) + ' ' + '{:>3}'.format(ds_str) + '\n')
+                
+        if debug:
+            print('Write to flare table', flush=True)
         
         # Periodically write to the flare table file
-        if (k % writeDFinterval) == 0 or (k+1) == len(files):
+        if ((k % writeDFinterval) == 0) or ((k+1) == len(files)):
             ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
             flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:k]],
                                    't0':FL_t0[:k], 't1':FL_t1[:k],
                                    'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k]})
-            print(flare_out)
             flare_out.to_csv(sector+ '_flare_out.csv')
         
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
