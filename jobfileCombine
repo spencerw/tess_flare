@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH -J tessCombine
+#SBATCH -n 28
+#SBATCH -N 1
+#SBATCH -t 02:00:00
+#SBATCH --mem=10G
+#SBATCH --mail-user=scw7@washington.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p stf
+
+# After all of the lightcurves are processed, the .csv flare tables
+# need to be combined into one file...
+
+module load anaconda3_5.3
+
+python combineFlareTables.py
+
+echo 'combining .csv files...'
+
+wait
+
+echo 'finished!'

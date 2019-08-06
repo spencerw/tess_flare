@@ -1,2 +1,7 @@
 meetingNotes.txt
 helloTESS
+*.log
+*.csv
+output.*
+slurm-*
+jobfile[0-9]*

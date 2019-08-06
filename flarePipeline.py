@@ -350,7 +350,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 period = 1.0 / freq[np.argmax(power)]
                 p_signal = np.max(power)/np.median(power)
                 
-                if (p_signal > 50 and False):
+                if (p_signal > 50):
                     if debug:
                         print('Reduce GP regression downsampling', flush=True)
                     red_downsample = True

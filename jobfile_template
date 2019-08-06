@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH -J tess^i^
+#SBATCH -n 28
+#SBATCH -N 1
+#SBATCH -t 96:00:00
+#SBATCH --mem=10G
+#SBATCH --mail-user=scw7@washington.edu
+#SBATCH --mail-type=ALL
+#SBATCH -p stf
+
+module load anaconda3_5.3
+
+./runProcs.sh ^p1^ ^p2^ ^ptot^ &
+
+echo 'procs started, waiting'
+
+wait
+
+echo 'all procs finished!'
