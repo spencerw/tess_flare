@@ -1,11 +1,11 @@
 import matplotlib as mpl
-import matplotlib.pyplot as plt
+#import matplotlib.pylab as plt
 from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import LombScargle
 import pandas as pd
 import numpy as np
-import exoplanet as xo
+#import exoplanet as xo
 import os
 import celerite
 from celerite import terms
@@ -13,7 +13,7 @@ from scipy.optimize import minimize, curve_fit
 import time
 import pickle
 
-from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, aflare1
+from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, aflare1, autocorr_estimator
 
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
@@ -113,7 +113,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
     yerr_rw_interp = np.interp(time, x, yerr_rw)
     gp.compute(time, yerr_rw_interp)
     mu, var = gp.predict(flux, time, return_var=True)
-    
+
     return mu, var, gp.get_parameter_dict()
 
 def gaussian(x, mu, sigma, A):
@@ -293,7 +293,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if debug:
             print('Estimate periods', flush=True)
 
-        acf = xo.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
+        
+        acf = autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
                                     yerr=tbl['PDCSAP_FLUX_ERR']/median,
                                     min_period=0.1, max_period=27, max_peaks=2)
 
@@ -305,7 +306,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         else:
             acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
             s_window = 128
-            
+ 
         # Save the median and s_window values
         param_file = files[k] + '.param'
         np.savetxt(param_file, (median, s_window, acf_1dt))
@@ -349,7 +350,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 period = 1.0 / freq[np.argmax(power)]
                 p_signal = np.max(power)/np.median(power)
                 
-                if (p_signal > 50):
+                if (p_signal > 50 and False):
                     if debug:
                         print('Reduce GP regression downsampling', flush=True)
                     red_downsample = True
