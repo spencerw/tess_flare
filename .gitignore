@@ -5,3 +5,4 @@ helloTESS
 output.*
 slurm-*
 jobfile[0-9]*
+failed.txt

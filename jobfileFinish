@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J tessCombine
+#SBATCH -J tessFinish
 #SBATCH -n 28
 #SBATCH -N 1
 #SBATCH -t 02:00:00
@@ -18,5 +18,12 @@ python combineFlareTables.py
 echo 'combining .csv files...'
 
 wait
+
+# Output from the failed light curves are scattered across the .log files
+# Collect them and put them all in one file
+
+echo 'collecting failed files...'
+
+python getFailed.py
 
 echo 'finished!'
