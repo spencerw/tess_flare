@@ -20,24 +20,29 @@ mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fo
 
 def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, debug=False):
     
-    # Start by downsampling the data before doing GP regression
-    # Using an interval of 15 takes us from 2 minute to 30 minute cadence
-    x = np.empty(len(time)//interval)
-    y = np.empty(len(flux)//interval)
-    yerr = np.empty(len(flux_err)//interval)
+    if interval > 1:
+        # Start by downsampling the data before doing GP regression
+        # Using an interval of 15 takes us from 2 minute to 30 minute cadence
+        x = np.empty(len(time)//interval)
+        y = np.empty(len(flux)//interval)
+        yerr = np.empty(len(flux_err)//interval)
+
+        # Calculate the average of every interval of points
+        for idx in range(len(x)):
+            i1 = idx*interval
+            i2 = (idx+1)*interval
+            if i2 > len(time)-1:
+                i2 = len(time)-1
+            x[idx] = np.mean(time[i1:i2])
+            y[idx] = np.mean(flux[i1:i2])
+            yerr[idx] = np.mean(flux_err[i1:i2])
+    else:
+        x = time
+        y = flux
+        yerr = flux_err
     
     if debug:
         print('Run iterative GP regression with i=' + str(interval) + ' (' + str(len(x)) + ' points)', flush=True)
-
-    # Calculate the average of every interval of points
-    for idx in range(len(x)):
-        i1 = idx*interval
-        i2 = (idx+1)*interval
-        if i2 > len(time)-1:
-            i2 = len(time)-1
-        x[idx] = np.mean(time[i1:i2])
-        y[idx] = np.mean(flux[i1:i2])
-        yerr[idx] = np.mean(flux_err[i1:i2])
     
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
