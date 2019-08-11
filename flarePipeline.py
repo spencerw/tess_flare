@@ -65,23 +65,19 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
     S0 = np.var(y) / (w0 * Q)
     kernel += terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                             bounds=bounds)
-    
-    # White noise component
-    kernel += terms.JitterTerm(log_sigma=np.log(np.median(yerr)),
-                               bounds=[(-20.0, 5.0)])
 
     # Now calculate the covariance matrix using the initial
     # kernel parameters
     gp = celerite.GP(kernel, mean=np.mean(y))
     gp.compute(x, yerr)
 
-    def neg_log_like(params, y, gp):
+    def neg_log_like(params, y, gp, m):
         gp.set_parameter_vector(params)
-        return -gp.log_likelihood(y)
+        return -gp.log_likelihood(y[m])
 
-    def grad_neg_log_like(params, y, gp):
+    def grad_neg_log_like(params, y, gp,m ):
         gp.set_parameter_vector(params)
-        return -gp.grad_log_likelihood(y)[1]
+        return -gp.grad_log_likelihood(y[m])[1]
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
@@ -92,32 +88,31 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
     # Find the best fit kernel parameters. We want to try to ignore the flares
     # when we do the fit. To do this, we will repeatedly find the best fit
     # solution to the kernel model, calculate the covariance matrix, predict
-    # the flux and then re-weight points based on how far they deviate from
+    # the flux and then mask out points based on how far they deviate from
     # the model. After a few passes, this should cause the model to fit mostly
     # to periodic features.
-    #
-    # This method still systematically produces a small 'bump' in the model under
-    # the flare. Need to figure out a way to get rid of this.
-    pen = 40 # penalty factor to apply to outliers
-    yerr_rw = np.copy(yerr)
+    m = np.ones(len(x), dtype=bool)
     for i in range(num_iter):
-        gp.compute(x, yerr_rw)
+        gp.compute(x[m], yerr[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
-                        method='L-BFGS-B', bounds=bounds, args=(y, gp))
+                        method='L-BFGS-B', bounds=bounds, args=(y, gp, m))
         gp.set_parameter_vector(soln.x)
         initial_params = soln.x
-        mu, var = gp.predict(y, x, return_var=True)
+        mu, var = gp.predict(y[m], x, return_var=True)
         sig = np.sqrt(var + yerr**2)
 
-        chisq = (y - mu)**2/yerr**2
-        yerr_rw = 1/np.sqrt(pen/(yerr**2*(chisq + pen)))
+        m0 = y - mu < 1.3 * sig
+        m = m0
         
     # Now that we have the best fit parameters for the kernel, go back and calculate
-    # the covariance matrix for the original light curve. Linearly interpolate to get
-    # the reweighted error bars (to ignore flares)
-    yerr_rw_interp = np.interp(time, x, yerr_rw)
-    gp.compute(time, yerr_rw_interp)
-    mu, var = gp.predict(flux, time, return_var=True)
+    # the covariance matrix for the original light curve. Linearly interpolate to decide
+    # which points to mask out
+    m_interp = np.interp(time, x, m)
+    m_interp_bool = np.ones(len(m_interp), dtype=bool)
+    delta = 1e-3
+    m_interp_bool[m_interp < delta] = False
+    gp.compute(time[m_interp_bool], flux_err[m_interp_bool])
+    mu, var = gp.predict(flux[m_interp_bool], time, return_var=True)
     
     return mu, var, gp.get_parameter_dict()
 
@@ -149,10 +144,12 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
         Factor by which to expand the flare window when fitting a model
     Returns
     -------
-        isFlare - Did the flare model fit better than the gaussian?
-        popt - Best fit parameters for the flare model
-        pstd - Error on the best fit parameters
-        chi - Reduced chi squared of fit
+        popt1 - Best fit parameters for the gaussian model
+        pstd1 - Error on the gaussian best fit parameters
+        chi1 - Reduced chi squared of gaussian fit
+        popt2 - Best fit parameters for the flare model
+        pstd2 - Error on the flare best fit parameters
+        chi2 - Reduced chi squared of flare fit
     '''
     # Use a segment of the light curve that is dx_fac times the width of the flare detection
     dx = tstop - tstart
@@ -167,26 +164,14 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
     # Fit a gaussian to the segment
     popt1, pcov1 = curve_fit(gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
     y_model = gaussian(x[mask], popt1[0], popt1[1], popt1[2])
-    c1 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    chi1 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
     
     # Fit the Davenport 2014 flare model to the segment
     popt2, pcov2 = curve_fit(aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
     y_model = aflare1(x[mask], popt2[0], popt2[1], popt2[2])
-    c2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    chi2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
     
-    isFlare = True
-    chi = c2
-    popt = popt2
-    pcov = pcov2
-    
-    # A better fit with the gaussian indicates that this is likely not a flare
-    if c1 < c2:
-        isFlare = False
-        chi = c1
-        popt = popt1
-        pcov = pcov2
-    
-    return isFlare, popt, np.sqrt(pcov.diagonal()), chi
+    return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2
 
 def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     '''
@@ -234,13 +219,20 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     FL_f1 = np.array([])
     FL_ed = np.array([])
     FL_ed_err = np.array([])
+    FL_mu = np.array([])
+    FL_std = np.array([])
+    FL_g_amp = np.array([])
+    FL_mu_err = np.array([])
+    FL_std_err = np.array([])
+    FL_g_amp_err = np.array([])
     FL_tpeak = np.array([])
     FL_fwhm = np.array([])
-    FL_amp = np.array([])
+    FL_f_amp = np.array([])
     FL_tpeak_err = np.array([])
     FL_fwhm_err = np.array([])
-    FL_amp_err = np.array([])
-    FL_chisq = np.array([])
+    FL_f_amp_err = np.array([])
+    FL_g_chisq = np.array([])
+    FL_f_chisq = np.array([])
     
     failed_files = []
     
@@ -311,9 +303,15 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
             s_window = 128
             
+        freq = np.linspace(1e-2, 100.0, 10000)
+        model = LombScargle(tbl['TIME'], tbl['PDCSAP_FLUX']/median)
+        power = model.power(freq, method='fast', normalization='psd')
+        power /= len(tbl['TIME'])
+        ls_per = 1.0 / freq[np.argmax(power)]
+            
         # Save the median and s_window values
         param_file = files[k] + '.param'
-        np.savetxt(param_file, (median, s_window, acf_1dt))
+        np.savetxt(param_file, (median, s_window, acf_1dt, ls_per))
         
         # Save the time, fluxes and flux errors after cutting data
         clean_data_file = files[k] + '.clean'
@@ -359,7 +357,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                         print('Reduce GP regression downsampling', flush=True)
                     red_downsample = True
                     smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=3, debug=debug)
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=1, debug=debug)
                 
                 if debug:
                     print('GP regression finished, saving results to file', flush=True)
@@ -409,16 +407,13 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             x = np.array(df_tbl['TIME'])
             y = np.array(df_tbl['PDCSAP_FLUX']/median - smo)
             yerr =  np.array(df_tbl['PDCSAP_FLUX_ERR']/median)
-            isFlare, popt, pstd, chisq = vetFlare(x, y, yerr, tstart, tstop)
+            popt1, pstd1, g_chisq, popt2, pstd2, f_chisq = vetFlare(x, y, yerr, tstart, tstop)
             
-            # If flare is gaussian, reject it
-            if not isFlare:
-                if debug:
-                    print('Flare is gaussian, throw it out')
-                continue
+            mu, std, g_amp = popt1[0], popt1[1], popt1[2]
+            mu_err, std_err, g_amp_err = pstd1[0], pstd1[1], pstd1[2]
                 
-            tpeak, fwhm, amp = popt[0], popt[1], popt[2]
-            tpeak_err, fwhm_err, amp_err = pstd[0], pstd[1], pstd[2]
+            tpeak, fwhm, f_amp = popt2[0], popt2[1], popt2[2]
+            tpeak_err, fwhm_err, f_amp_err = pstd2[0], pstd2[1], pstd2[2]
             
             if debug:
                 print('Flare model fit, measuring ED')
@@ -436,13 +431,22 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             FL_ed = np.append(FL_ed, ED)
             FL_ed_err = np.append(FL_ed_err, ED_err)
             
+            FL_mu = np.append(FL_mu, mu)
+            FL_std = np.append(FL_std, std)
+            FL_g_amp = np.append(FL_g_amp, g_amp)
+            FL_mu_err = np.append(FL_mu_err, mu_err)
+            FL_std_err = np.append(FL_std_err, std_err)
+            FL_g_amp_err = np.append(FL_g_amp_err, g_amp_err)
+            
             FL_tpeak = np.append(FL_tpeak, tpeak)
             FL_fwhm = np.append(FL_fwhm, fwhm)
-            FL_amp = np.append(FL_amp, amp)
+            FL_f_amp = np.append(FL_f_amp, f_amp)
             FL_tpeak_err = np.append(FL_tpeak_err, tpeak_err)
             FL_fwhm_err = np.append(FL_fwhm_err, fwhm_err)
-            FL_amp_err = np.append(FL_amp_err, amp_err)
-            FL_chisq = np.append(FL_chisq, chisq)
+            FL_f_amp_err = np.append(FL_f_amp_err, f_amp_err)
+            
+            FL_g_chisq = np.append(FL_g_chisq, g_chisq)
+            FL_f_chisq = np.append(FL_f_chisq, f_chisq)
 
             if makefig:
                 axes.scatter(df_tbl['TIME'][s1:s2],
@@ -485,9 +489,11 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:k]],
                                    't0':FL_t0[:k], 't1':FL_t1[:k],
                                    'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k], 'ed_err':FL_ed_err[:k],
-                                   'tpeak': FL_tpeak[:k], 'fwhm': FL_fwhm[:k], 'amp': FL_amp[:k],
-                                   'tpeak_err': FL_tpeak_err[:k], 'fwhm_err': FL_fwhm_err[:k],
-                                   'amp_err': FL_amp_err[:k], 'chisq': FL_chisq[:k]})
+                                   'mu':FL_mu[:k], 'std':FL_std[:k], 'g_amp': FL_g_amp[:k],
+                                   'mu_err':FL_mu_err[:k], 'std_err':FL_std_err[:k], 'g_amp_err':FL_g_amp_err[:k],
+                                   'tpeak':FL_tpeak[:k], 'fwhm':FL_fwhm[:k], 'f_amp':FL_f_amp[:k],
+                                   'tpeak_err':FL_tpeak_err[:k], 'fwhm_err':FL_fwhm_err[:k],
+                                   'f_amp_err':FL_f_amp_err[:k],'f_chisq':FL_f_chisq[:k], 'g_chisq':FL_g_chisq[:k]})
             flare_out.to_csv(sector+ '_flare_out.csv')
         
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
