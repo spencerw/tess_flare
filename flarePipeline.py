@@ -295,9 +295,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         else:
             acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
             s_window = 128
-<<<<<<< HEAD
- 
-=======
             
         freq = np.linspace(1e-2, 100.0, 10000)
         model = LombScargle(tbl['TIME'], tbl['PDCSAP_FLUX']/median)
@@ -305,7 +302,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         power /= len(tbl['TIME'])
         ls_per = 1.0 / freq[np.argmax(power)]
             
->>>>>>> 4b5c58f... Finishing touches on pipeline
         # Save the median and s_window values
         param_file = files[k] + '.param'
         np.savetxt(param_file, (median, s_window, acf_1dt, ls_per))
