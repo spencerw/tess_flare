@@ -103,16 +103,8 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
 
         m0 = y - mu < 1.3 * sig
         m = m0
-        
-    # Now that we have the best fit parameters for the kernel, go back and calculate
-    # the covariance matrix for the original light curve. Linearly interpolate to decide
-    # which points to mask out
-    m_interp = np.interp(time, x, m)
-    m_interp_bool = np.ones(len(m_interp), dtype=bool)
-    delta = 1e-3
-    m_interp_bool[m_interp < delta] = False
-    gp.compute(time[m_interp_bool], flux_err[m_interp_bool])
-    mu, var = gp.predict(flux[m_interp_bool], time, return_var=True)
+    
+    mu, var = gp.predict(y[m], time, return_var=True)
     
     return mu, var, gp.get_parameter_dict()
 
@@ -340,10 +332,11 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                     print('No GP file found, running GP regression', flush=True)
                 smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
                                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=15, debug=debug)
-                
+
                 # If the data - smoothed GP curve still has periodicity, re-run the GP regression
                 # with less downsampling
                 freq = np.linspace(1e-2, 100.0, 10000)
+                print(smo.shape, df_tbl['TIME'].shape)
                 x = df_tbl['TIME']
                 y = df_tbl['PDCSAP_FLUX']/median - smo
                 model = LombScargle(x, y)
@@ -362,6 +355,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 if debug:
                     print('GP regression finished, saving results to file', flush=True)
                     
+                print(smo)
                 np.savetxt(gp_data_file, (smo, var))
                 
                 # Write out the best fit kernel parameters to a file
