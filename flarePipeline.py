@@ -104,6 +104,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
         m0 = y - mu < 1.3 * sig
         m = m0
     
+    gp.compute(x[m], yerr[m])
     mu, var = gp.predict(y[m], time, return_var=True)
     
     return mu, var, gp.get_parameter_dict()
@@ -209,6 +210,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     FL_t1 = np.array([])
     FL_f0 = np.array([])
     FL_f1 = np.array([])
+    FL_p_res = np.array([])
     FL_ed = np.array([])
     FL_ed_err = np.array([])
     FL_mu = np.array([])
@@ -334,10 +336,9 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
                                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=15, debug=debug)
 
-                # If the data - smoothed GP curve still has periodicity, re-run the GP regression
-                # with less downsampling
+                # Calculate the LS power in the smoothed model to see if we did a good job
+                # of removing periodicity
                 freq = np.linspace(1e-2, 100.0, 10000)
-                print(smo.shape, df_tbl['TIME'].shape)
                 x = df_tbl['TIME']
                 y = df_tbl['PDCSAP_FLUX']/median - smo
                 model = LombScargle(x, y)
@@ -346,17 +347,9 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 period = 1.0 / freq[np.argmax(power)]
                 p_signal = np.max(power)/np.median(power)
                 
-                if (p_signal > 50):
-                    if debug:
-                        print('Reduce GP regression downsampling', flush=True)
-                    red_downsample = True
-                    smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=1, debug=debug)
-                
                 if debug:
                     print('GP regression finished, saving results to file', flush=True)
                     
-                print(smo)
                 np.savetxt(gp_data_file, (smo, var))
                 
                 # Write out the best fit kernel parameters to a file
@@ -423,6 +416,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
+            FL_p_res = np.append(FL_p_res, p_signal)
             FL_ed = np.append(FL_ed, ED)
             FL_ed_err = np.append(FL_ed_err, ED_err)
             
@@ -483,8 +477,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
             flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:k]],
                                    't0':FL_t0[:k], 't1':FL_t1[:k],
-                                   'med':FL_f0[:k], 'peak':FL_f1[:k], 'ed':FL_ed[:k], 'ed_err':FL_ed_err[:k],
-                                   'mu':FL_mu[:k], 'std':FL_std[:k], 'g_amp': FL_g_amp[:k],
+                                   'med':FL_f0[:k], 'peak':FL_f1[:k], 'p_res':FL_p_res[:k], 'ed':FL_ed[:k],
+                                   'ed_err':FL_ed_err[:k], 'mu':FL_mu[:k], 'std':FL_std[:k], 'g_amp': FL_g_amp[:k],
                                    'mu_err':FL_mu_err[:k], 'std_err':FL_std_err[:k], 'g_amp_err':FL_g_amp_err[:k],
                                    'tpeak':FL_tpeak[:k], 'fwhm':FL_fwhm[:k], 'f_amp':FL_f_amp[:k],
                                    'tpeak_err':FL_tpeak_err[:k], 'fwhm_err':FL_fwhm_err[:k],
