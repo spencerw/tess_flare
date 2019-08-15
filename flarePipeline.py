@@ -208,7 +208,7 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     
     return ED, ED_err
 
-def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False):
+def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False, gpInterval=15):
  
     # Columns for flare table
     FL_id = np.array([])
@@ -360,7 +360,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 if debug:
                     print('No GP file found, running GP regression', flush=True)
                 smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=15, debug=debug)
+                                         df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=gpInterval, debug=debug)
 
                 gp_log_s00 = params[0]
                 gp_log_omega00 = params[1]
