@@ -18,7 +18,6 @@ mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fo
                             'image.cmap': 'viridis'})
 
 def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, debug=False):
-    
     if interval > 1:
         # Start by downsampling the data before doing GP regression
         # Using an interval of 15 takes us from 2 minute to 30 minute cadence
@@ -102,7 +101,8 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
 
         m0 = y - mu < 1.3 * sig
         m = m0
-    
+
+    gp.compute(x[m], yerr[m])
     mu, var = gp.predict(y[m], time, return_var=True)
     
     return mu, var, gp.get_parameter_vector()
@@ -152,16 +152,20 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
     sig0 = (tstop - tstart)/2
     A0 = 1
 
-    # Fit a gaussian to the segment
-    popt1, pcov1 = curve_fit(gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
-    y_model = gaussian(x[mask], popt1[0], popt1[1], popt1[2])
-    chi1 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    try:
+        # Fit a gaussian to the segment
+        popt1, pcov1 = curve_fit(gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+        y_model = gaussian(x[mask], popt1[0], popt1[1], popt1[2])
+        chi1 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
     
-    # Fit the Davenport 2014 flare model to the segment
-    popt2, pcov2 = curve_fit(aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
-    y_model = aflare1(x[mask], popt2[0], popt2[1], popt2[2])
-    chi2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
-    
+        # Fit the Davenport 2014 flare model to the segment
+        popt2, pcov2 = curve_fit(aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+        y_model = aflare1(x[mask], popt2[0], popt2[1], popt2[2])
+        chi2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+    except RuntimeError:
+        empty = np.zeros(3)
+        return empty, empty, -1, empty, empty, -1    
+
     return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2
 
 def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
@@ -190,10 +194,13 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
         ED - Equivalent duration of the flare
         ED_err - The uncertainty in the equivalent duration
     '''
-    width = fwhm*num_fwhm
-    istart = np.argwhere(x > tpeak - width/2)[0]
-    ipeak = np.argwhere(x > tpeak)[0]
-    istop = np.argwhere(x > tpeak + width/2)[0]
+    try:
+        width = fwhm*num_fwhm
+        istart = np.argwhere(x > tpeak - width/2)[0]
+        ipeak = np.argwhere(x > tpeak)[0]
+        istop = np.argwhere(x > tpeak + width/2)[0]
+    except IndexError:
+        return -1, -1
     
     mask = (x > x[istart]) & (x < x[istop])
     ED = np.trapz(y[mask], x[mask])
@@ -374,18 +381,32 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                     print('GP regression finished, saving results to file', flush=True)
                     
                 np.savetxt(gp_data_file, (smo, var))
-                    
+
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file. Write out an empty .gp file
             except celerite.solver.LinAlgError:
+                P_p_res = np.append(P_p_res, p_signal)
+                P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
+                P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
+                P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
+                P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
+                P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
                 print(files[k].split('/')[-1] + ' failed during GP regression', flush=True)
                 failed_files.append(files[k].split('/')[-1])
                 np.savetxt(gp_data_file, ([]))
+                continue
             except ValueError:
-                print(files[k].split('/')[-1] + ' failed during GP prior', flush=True)
+                P_p_res = np.append(P_p_res, p_signal)
+                P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
+                P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
+                P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
+                P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
+                P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
+                print(files[k].split('/')[-1] + ' failed during GP regression', flush=True)
                 failed_files.append(files[k].split('/')[-1])
                 np.savetxt(gp_data_file, ([]))
-            
+                continue
+ 
         P_p_res = np.append(P_p_res, p_signal)
         P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
         P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
