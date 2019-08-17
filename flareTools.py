@@ -21,6 +21,44 @@ def update_progress(progress):
     clear_output(wait = True)
     text = "Progress: [{0}] {1:.1f}%".format( "#" * block + "-" * (bar_length - block), progress * 100)
     print(text)
+    
+def EasyE(flux, error, N1=3, N2=1, N3=3):
+    '''
+    Easy Eclipse finder
+    i.e., look for events that are:
+        N1 datapoints long, and 
+        N2 times below the stddev, and 
+        N3 times below the error
+    
+    use approach from flare finder (below)
+    
+    to add: simple triangle model fit?
+    '''
+    
+    med_i = np.nanmedian(flux)
+
+    # sig_i = np.nanstd(flux)
+    sig_i = np.nanmedian(pd.Series(flux).rolling(64, center=True).std())
+
+    ca = flux - med_i
+    cb = np.abs(flux - med_i) / sig_i
+    cc = np.abs(flux - med_i) / error
+
+    ctmp = np.where((ca < 0) & (cb > N2) & (cc > N3))[0]
+    cindx = np.zeros_like(flux)
+    cindx[ctmp] = 1
+    ConM = np.zeros_like(flux)
+    # this requires a full pass thru the data -> bottleneck
+    for k in range(2, len(flux)):
+        ConM[-k] = cindx[-k] * (ConM[-(k-1)] + cindx[-k])
+    istart_i = np.where((ConM[1:] >= N1) &
+                        (ConM[0:-1] - ConM[1:] < 0))[0] + 1
+    istop_i = istart_i + (ConM[istart_i] - 1)
+
+    istart_i = np.array(istart_i, dtype='int')
+    istop_i = np.array(istop_i, dtype='int')
+
+    return istart_i, istop_i
 
 def id_segments(time, dt_limit, dt_trim=0):
     '''

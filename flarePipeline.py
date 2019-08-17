@@ -17,7 +17,7 @@ from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, afla
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, debug=False):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, debug=False):
     if interval > 1:
         # Start by downsampling the data before doing GP regression
         # Using an interval of 15 takes us from 2 minute to 30 minute cadence
@@ -101,6 +101,10 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=5, d
 
         m0 = y - mu < 1.3 * sig
         m = m0
+        n_pts_prev = np.sum(m)
+        n_pts = np.sum(m0)
+        if (n_pts == n_pts_prev) or np.fabs(n_pts - n_pts_prev) < 3:
+            break
 
     gp.compute(x[m], yerr[m])
     mu, var = gp.predict(y[m], time, return_var=True)
@@ -292,6 +296,20 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             pdcsap_flux_trim = np.concatenate((pdcsap_flux_trim, pdcsap_flux_seg), axis=0)
             pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)
             
+        # Mask out eclipses and transits
+        # Leave this disabled for now, introduces problems with bottoms of starspot oscillations
+        # being marked as eclipses. Might be easier to just throw eclpises out in the flare table
+        # at the end
+        """istart_e, istop_e = EasyE(pdcsap_flux_trim, pdcsap_flux_error_trim)
+        mask = np.ones(len(time), dtype=bool)
+        for idx in range(len(istart_e)):
+            if debug:
+                print('Mask out eclipse at t='+str(tess_bjd_trim[istart_e[idx]]))
+            mask[istart_e[idx]:istop_e[idx]] = 0
+        tess_bjd_trim = tess_bjd_trim[mask]
+        pdcsap_flux_trim = pdcsap_flux_trim[mask]
+        pdcsap_flux_error_trim = pdcsap_flux_error_trim[mask]"""
+            
         tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
                      names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
         df_tbl = tbl.to_pandas()
@@ -300,7 +318,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         
         if debug:
             print('Estimate periods', flush=True)
-
         
         acf = autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
                                     yerr=tbl['PDCSAP_FLUX_ERR']/median,
