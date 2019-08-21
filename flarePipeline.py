@@ -91,6 +91,8 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
     # to periodic features.
     m = np.ones(len(x), dtype=bool)
     for i in range(num_iter):
+        if debug:
+            print('Iteration ' + str(i), flush=True)
         gp.compute(x[m], yerr[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
                         method='L-BFGS-B', bounds=bounds, args=(y, gp, m))
@@ -100,9 +102,12 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
         sig = np.sqrt(var + yerr**2)
 
         m0 = y - mu < 1.3 * sig
-        m = m0
         n_pts_prev = np.sum(m)
         n_pts = np.sum(m0)
+        if n_pts == 0:
+            print('Warning: all points thrown out (noisy LC?)')
+            break
+        m = m0
         if (n_pts == n_pts_prev) or np.fabs(n_pts - n_pts_prev) < 3:
             break
 
@@ -261,8 +266,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         start_time = time.time()
         filename = files[k].split('/')[-1]
         
-        red_downsample = False
-        
         if debug:
             print('Open ' + files[k], flush=True)
 
@@ -401,18 +404,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
 
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file. Write out an empty .gp file
-            except celerite.solver.LinAlgError:
-                P_p_res = np.append(P_p_res, p_signal)
-                P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
-                P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
-                P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
-                P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
-                P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
-                print(files[k].split('/')[-1] + ' failed during GP regression', flush=True)
-                failed_files.append(files[k].split('/')[-1])
-                np.savetxt(gp_data_file, ([]))
-                continue
-            except ValueError:
+            except:
+                traceback.print_exc()
                 P_p_res = np.append(P_p_res, p_signal)
                 P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
                 P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
@@ -454,9 +447,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             # Try to fit a flare model to the detection
             tstart = df_tbl['TIME'].values[FL[0][j]]
             tstop = df_tbl['TIME'].values[FL[1][j]]
-            x = np.array(df_tbl['TIME'])
-            y = np.array(df_tbl['PDCSAP_FLUX']/median - smo)
-            yerr =  np.array(df_tbl['PDCSAP_FLUX_ERR']/median)
+            mask = np.isfinite(smo)
+            x = np.array(df_tbl['TIME'])[mask]
+            y = np.array(df_tbl['PDCSAP_FLUX'][mask]/median - smo[mask])
+            yerr =  np.array(df_tbl['PDCSAP_FLUX_ERR'][mask]/median)
             popt1, pstd1, g_chisq, popt2, pstd2, f_chisq = vetFlare(x, y, yerr, tstart, tstop)
             
             mu, std, g_amp = popt1[0], popt1[1], popt1[2]
@@ -521,37 +515,32 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
             with open(sector+'.log', 'a') as f:
                 time_elapsed = time.time() - start_time
-                
-                ds_str = 'N'
-                if red_downsample:
-                    ds_str = 'Y'
                 num_flares = len(FL[0])
                 
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
-                        '{:<60}'.format(files[k].split('/')[-1]) + '{:<20}'.format(time_elapsed) + ' ' + '{:<10}'.format(ds_str) + '{:<10}'.format(num_flares) + '\n')
+                        '{:<60}'.format(files[k].split('/')[-1]) + '{:<20}'.format(time_elapsed) + '{:<10}'.format(num_flares) + '\n')
                 
         if debug:
             print('Write to flare table', flush=True)
         
         # Periodically write to the flare table file and param table file
         l = k+1
-        if ((k % writeDFinterval) == 0) or (l == len(files)):
-            ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
-            flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:l]],
-                                   't0':FL_t0[:l], 't1':FL_t1[:l],
-                                   'med':FL_f0[:l], 'peak':FL_f1[:l], 'ed':FL_ed[:l],
-                                   'ed_err':FL_ed_err[:l], 'mu':FL_mu[:l], 'std':FL_std[:l], 'g_amp': FL_g_amp[:l],
-                                   'mu_err':FL_mu_err[:l], 'std_err':FL_std_err[:l], 'g_amp_err':FL_g_amp_err[:l],
-                                   'tpeak':FL_tpeak[:l], 'fwhm':FL_fwhm[:l], 'f_amp':FL_f_amp[:l],
-                                   'tpeak_err':FL_tpeak_err[:l], 'fwhm_err':FL_fwhm_err[:l],
-                                   'f_amp_err':FL_f_amp_err[:l],'f_chisq':FL_f_chisq[:l], 'g_chisq':FL_g_chisq[:l]})
-            flare_out.to_csv(sector+ '_flare_out.csv')
+        ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
+        flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:l]],
+                               't0':FL_t0[:l], 't1':FL_t1[:l],
+                               'med':FL_f0[:l], 'peak':FL_f1[:l], 'ed':FL_ed[:l],
+                               'ed_err':FL_ed_err[:l], 'mu':FL_mu[:l], 'std':FL_std[:l], 'g_amp': FL_g_amp[:l],
+                               'mu_err':FL_mu_err[:l], 'std_err':FL_std_err[:l], 'g_amp_err':FL_g_amp_err[:l],
+                               'tpeak':FL_tpeak[:l], 'fwhm':FL_fwhm[:l], 'f_amp':FL_f_amp[:l],
+                               'tpeak_err':FL_tpeak_err[:l], 'fwhm_err':FL_fwhm_err[:l],
+                               'f_amp_err':FL_f_amp_err[:l],'f_chisq':FL_f_chisq[:l], 'g_chisq':FL_g_chisq[:l]})
+        flare_out.to_csv(sector+ '_flare_out.csv', index=False)
             
-            param_out = pd.DataFrame(data={'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
-                                           'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l], 'gp_log_s00':P_gp_log_s00[:l],
-                                           'gp_log_omega00':P_gp_log_omega00[:l], 'gp_log_s01':P_gp_log_s01[:l],
-                                           'gp_log_omega01':P_gp_log_omega01[:l], 'gp_log_q11':P_gp_log_q1[:l]})
-            param_out.to_csv(sector+ '_param_out.csv')
+        param_out = pd.DataFrame(data={'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
+                                       'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l], 'gp_log_s00':P_gp_log_s00[:l],
+                                       'gp_log_omega00':P_gp_log_omega00[:l], 'gp_log_s01':P_gp_log_s01[:l],
+                                       'gp_log_omega01':P_gp_log_omega01[:l], 'gp_log_q11':P_gp_log_q1[:l]})
+        param_out.to_csv(sector+ '_param_out.csv', index=False)
         
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
     print(str(len(failed_files)) + ' light curves failed')
