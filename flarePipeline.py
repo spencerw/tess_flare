@@ -11,6 +11,7 @@ import celerite
 from celerite import terms
 from scipy.optimize import minimize, curve_fit
 import time
+import traceback
 
 from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, aflare1, autocorr_estimator
 
@@ -35,9 +36,9 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
             y[idx] = np.mean(flux[i1:i2])
             yerr[idx] = np.mean(flux_err[i1:i2])
     else:
-        x = time
-        y = flux
-        yerr = flux_err
+        x = np.asarray(time)
+        y = np.asarray(flux)
+        yerr = np.asarray(flux_err)
     
     if debug:
         print('Run iterative GP regression with i=' + str(interval) + ' (' + str(len(x)) + ' points)', flush=True)
@@ -269,13 +270,43 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if debug:
             print('Open ' + files[k], flush=True)
 
+        gp_data_file = files[k] + '.gp'
+        gp_param_file = files[k] + '.gp.par'
+        median = -1
+        s_window = -1
+        acf_1dt = -1
+        ls_per = -1
+        p_signal = -1
+        gp_log_s00 = -1
+        gp_log_omega00 = -1
+        gp_log_s01 = -1
+        gp_log_omega01 = -1
+        gp_log_q1 = -1
+
         with fits.open(files[k], mode='readonly') as hdulist:
-            tess_bjd = hdulist[1].data['TIME']
-            quality = hdulist[1].data['QUALITY']
-            pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
-            pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
+            try:
+                tess_bjd = hdulist[1].data['TIME']
+                quality = hdulist[1].data['QUALITY']
+                pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
+                pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
+            except:
+                P_median = np.append(P_median, median)
+                P_s_window = np.append(P_s_window, s_window)
+                P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
+                P_ls_per = np.append(P_ls_per, ls_per)
+                P_p_res = np.append(P_p_res, p_signal)
+                P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
+                P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
+                P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
+                P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
+                P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
+                print(files[k].split('/')[-1] + ' failed during reading', flush=True)
+                failed_files.append(files[k].split('/')[-1])
+                np.savetxt(gp_data_file, ([]))
+                continue
             
-        ok_cut = quality == 0
+        # There were a few cases where NaN values had quality = 0
+        ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
             
         if debug:
             print('Find segments', flush=True)
@@ -353,9 +384,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         if debug:
             print('GP smoothing', flush=True)
             
-        # GP smoothing takes a long time, save mu and var to an ascii file
-        gp_data_file = files[k] + '.gp'
-        gp_param_file = files[k] + '.gp.par'
         if os.path.exists(gp_data_file) and not clobberGP:
             if debug:
                 print('GP file exists, loading', flush=True)
@@ -368,12 +396,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 
             smo, var = np.loadtxt(gp_data_file)
         else:
-            p_signal = -100
-            gp_log_s00 = -100
-            gp_log_omega00 = -100
-            gp_log_s01 = -100
-            gp_log_omega01 = -100
-            gp_log_q1 = -100
             smo = np.zeros(len(df_tbl['TIME']))
             var = np.zeros(len(df_tbl['TIME']))
             try:
