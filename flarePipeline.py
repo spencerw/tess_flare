@@ -377,10 +377,6 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
         P_ls_per = np.append(P_ls_per, ls_per)
         
-        # Save the time, fluxes and flux errors after cutting data
-        clean_data_file = files[k] + '.clean'
-        np.savetxt(clean_data_file, (df_tbl['TIME'], df_tbl['PDCSAP_FLUX'], df_tbl['PDCSAP_FLUX_ERR']))
-        
         if debug:
             print('GP smoothing', flush=True)
             
@@ -483,15 +479,17 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             
             if debug:
                 print('Flare model fit, measuring ED')
-            
+
+            mask1 = (x >= tstart) & (x <= tstop)
+            fl_median = np.nanmedian(smo[mask][mask1])
+
             # Now that we have a flare model, measure the equivalent duration
-            # Should I propogate the uncertainties in the model parameters through?
             ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
             
             FL_id = np.append(FL_id, k)
             FL_t0 = np.append(FL_t0, tstart)
             FL_t1 = np.append(FL_t1, tstop)
-            FL_f0 = np.append(FL_f0, median)
+            FL_f0 = np.append(FL_f0, fl_median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
             FL_ed = np.append(FL_ed, ED)
@@ -548,7 +546,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         # Periodically write to the flare table file and param table file
         l = k+1
         ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
-        flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id[:l]],
+        ALL_FILES = pd.Series(files).str.split('/', expand=True).iloc[:,-1]
+        flare_out = pd.DataFrame(data={'file':ALL_FILES[FL_id[:l]],'TIC':ALL_TIC[FL_id[:l]],
                                't0':FL_t0[:l], 't1':FL_t1[:l],
                                'med':FL_f0[:l], 'peak':FL_f1[:l], 'ed':FL_ed[:l],
                                'ed_err':FL_ed_err[:l], 'mu':FL_mu[:l], 'std':FL_std[:l], 'g_amp': FL_g_amp[:l],
@@ -558,7 +557,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                                'f_amp_err':FL_f_amp_err[:l],'f_chisq':FL_f_chisq[:l], 'g_chisq':FL_g_chisq[:l]})
         flare_out.to_csv(sector+ '_flare_out.csv', index=False)
             
-        param_out = pd.DataFrame(data={'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
+        param_out = pd.DataFrame(data={'file':ALL_FILES[:l],'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
                                        'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l], 'gp_log_s00':P_gp_log_s00[:l],
                                        'gp_log_omega00':P_gp_log_omega00[:l], 'gp_log_s01':P_gp_log_s01[:l],
                                        'gp_log_omega01':P_gp_log_omega01[:l], 'gp_log_q11':P_gp_log_q1[:l]})
