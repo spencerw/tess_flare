@@ -18,7 +18,7 @@ from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, afla
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, debug=False):
+def iterGaussProc(time, flux, flux_err, period_guess, interval=1, num_iter=20, debug=True):
     if interval > 1:
         # Start by downsampling the data before doing GP regression
         # Using an interval of 15 takes us from 2 minute to 30 minute cadence
@@ -41,7 +41,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
         yerr = np.asarray(flux_err)
     
     if debug:
-        print('Run iterative GP regression with i=' + str(interval) + ' (' + str(len(x)) + ' points)', flush=True)
+        print('Run iterative GP regression with i=' + str(interval) + ' (' + str(len(x)) + ' points)')
     
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
@@ -93,13 +93,14 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
     m = np.ones(len(x), dtype=bool)
     for i in range(num_iter):
         if debug:
-            print('Iteration ' + str(i), flush=True)
+            print('Iteration ' + str(i))
         gp.compute(x[m], yerr[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
                         method='L-BFGS-B', bounds=bounds, args=(y, gp, m))
         gp.set_parameter_vector(soln.x)
         initial_params = soln.x
-        mu, var = gp.predict(y[m], x, return_var=True)
+        mu = gp.predict(y[m], x, return_cov=False, return_var=False)
+        var = np.nanvar(y - mu)
         sig = np.sqrt(var + yerr**2)
 
         m0 = y - mu < 1.3 * sig
@@ -113,9 +114,9 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=15, num_iter=20, 
             break
 
     gp.compute(x[m], yerr[m])
-    mu, var = gp.predict(y[m], time, return_var=True)
+    mu = gp.predict(y[m], time, return_cov=False, return_var=False)
     
-    return mu, var, gp.get_parameter_vector()
+    return mu, gp.get_parameter_vector()
 
 def gaussian(x, mu, sigma, A):
     return A/np.sqrt(2*np.pi*sigma**2)*np.exp(-(x - mu)**2/sigma**2/2)
@@ -390,14 +391,13 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 failed_files.append(files[k].split('/')[-1])
                 continue
                 
-            smo, var = np.loadtxt(gp_data_file)
+            smo = np.loadtxt(gp_data_file)
         else:
             smo = np.zeros(len(df_tbl['TIME']))
-            var = np.zeros(len(df_tbl['TIME']))
             try:
                 if debug:
-                    print('No GP file found, running GP regression', flush=True)
-                smo, var, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
+                    print('No GP file found, running GP regression')
+                smo, params = iterGaussProc(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
                                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, interval=gpInterval, debug=debug)
 
                 gp_log_s00 = params[0]
@@ -418,7 +418,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 if debug:
                     print('GP regression finished, saving results to file', flush=True)
                     
-                np.savetxt(gp_data_file, (smo, var))
+                np.savetxt(gp_data_file, (smo))
 
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file. Write out an empty .gp file
