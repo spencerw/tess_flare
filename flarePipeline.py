@@ -173,7 +173,7 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
         popt2, pcov2 = curve_fit(aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
         y_model = aflare1(x[mask], popt2[0], popt2[1], popt2[2])
         chi2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
-    except RuntimeError:
+    except:
         empty = np.zeros(3)
         return empty, empty, -1, empty, empty, -1    
 
@@ -379,15 +379,21 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         P_ls_per = np.append(P_ls_per, ls_per)
         
         if debug:
-            print('GP smoothing', flush=True)
+            print('GP smoothing')
             
         if os.path.exists(gp_data_file) and not clobberGP:
             if debug:
-                print('GP file exists, loading', flush=True)
+                print('GP file exists, loading')
                 
             # Failed GP regression will produce an empty file
             if os.path.getsize(gp_data_file) == 0:
-                print(files[k].split('/')[-1] + ' failed (previously) during GP regression', flush=True)
+                print(files[k].split('/')[-1] + ' failed (previously) during GP regression')
+                P_p_res = np.append(P_p_res, p_signal)
+                P_gp_log_s00 = np.append(P_gp_log_s00, gp_log_s00)
+                P_gp_log_omega00 = np.append(P_gp_log_omega00, gp_log_omega00)
+                P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
+                P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
+                P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
                 failed_files.append(files[k].split('/')[-1])
                 continue
                 
@@ -449,14 +455,14 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                           linestyle=None, alpha=0.15, label='PDCSAP_FLUX')
 
         if np.sum(ok_cut) < 1000:
-            print('Warning: ' + f + ' contains < 1000 good points', flush=True)
+            print('Warning: ' + f + ' contains < 1000 good points')
             
-        print('Find flares', flush=True)
+        print('Find flares')
         
         # Search for flares in the smoothed light curve using change point analysis
         FL = FINDflare(df_tbl['PDCSAP_FLUX']/median - smo, 
                         df_tbl['PDCSAP_FLUX_ERR']/median,
-                        avg_std=True, std_window=s_window, N1=4, N2=2, N3=5)
+                        avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
 
         for j in range(len(FL[0])):
             if debug:
@@ -489,7 +495,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             FL_id = np.append(FL_id, k)
             FL_t0 = np.append(FL_t0, tstart)
             FL_t1 = np.append(FL_t1, tstop)
-            FL_f0 = np.append(FL_f0, fl_median)
+            FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
             FL_ed = np.append(FL_ed, ED)
