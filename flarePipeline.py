@@ -227,6 +227,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     FL_t1 = np.array([])
     FL_f0 = np.array([])
     FL_f1 = np.array([])
+    FL_smo_pk = np.array([])
     FL_ed = np.array([])
     FL_ed_err = np.array([])
     FL_mu = np.array([])
@@ -498,6 +499,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
             FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
+            FL_smo_pk = np.append(FL_smo_pk, np.nanmax(y[mask][mask1]))
             FL_ed = np.append(FL_ed, ED)
             FL_ed_err = np.append(FL_ed_err, ED_err)
             
@@ -555,7 +557,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         ALL_FILES = pd.Series(files).str.split('/', expand=True).iloc[:,-1]
         flare_out = pd.DataFrame(data={'file':ALL_FILES[FL_id[:l]],'TIC':ALL_TIC[FL_id[:l]],
                                't0':FL_t0[:l], 't1':FL_t1[:l],
-                               'med':FL_f0[:l], 'peak':FL_f1[:l], 'ed':FL_ed[:l],
+                               'med':FL_f0[:l], 'peak':FL_f1[:l], 'smo_pk':FL_smo_pk[:l], 'ed':FL_ed[:l],
                                'ed_err':FL_ed_err[:l], 'mu':FL_mu[:l], 'std':FL_std[:l], 'g_amp': FL_g_amp[:l],
                                'mu_err':FL_mu_err[:l], 'std_err':FL_std_err[:l], 'g_amp_err':FL_g_amp_err[:l],
                                'tpeak':FL_tpeak[:l], 'fwhm':FL_fwhm[:l], 'f_amp':FL_f_amp[:l],
