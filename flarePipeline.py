@@ -222,6 +222,8 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
 def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False, gpInterval=15):
  
     # Columns for flare table
+    FL_files = np.array([])
+    FL_TICs = np.array([])
     FL_id = np.array([])
     FL_t0 = np.array([])
     FL_t1 = np.array([])
@@ -269,6 +271,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     for k in range(len(files)):
         start_time = time.time()
         filename = files[k].split('/')[-1]
+        TIC = int(filename.split('-')[-3])
+        print(TIC)
         
         if debug:
             print('Open ' + files[k], flush=True)
@@ -494,6 +498,8 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             # Now that we have a flare model, measure the equivalent duration
             ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
             
+            FL_files = np.append(FL_files, filename)
+            FL_TICs = np.append(FL_TICs, TIC)
             FL_id = np.append(FL_id, k)
             FL_t0 = np.append(FL_t0, tstart)
             FL_t1 = np.append(FL_t1, tstop)
@@ -550,22 +556,22 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
                         '{:<60}'.format(files[k].split('/')[-1]) + '{:<20}'.format(time_elapsed) + '{:<10}'.format(num_flares) + '\n')
                 
-        if debug:
-            print('Write to flare table', flush=True)
         
         # Periodically write to the flare table file and param table file
         l = k+1
         ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
         ALL_FILES = pd.Series(files).str.split('/', expand=True).iloc[:,-1]
-        flare_out = pd.DataFrame(data={'file':ALL_FILES[FL_id[:l]],'TIC':ALL_TIC[FL_id[:l]],
-                               't0':FL_t0[:l], 't1':FL_t1[:l],
-                               'med':FL_f0[:l], 'peak':FL_f1[:l], 'smo_pk':FL_smo_pk[:l], 'smo_sig':FL_smo_sig[:l], 'ed':FL_ed[:l],
-                               'ed_err':FL_ed_err[:l], 'mu':FL_mu[:l], 'std':FL_std[:l], 'g_amp': FL_g_amp[:l],
-                               'mu_err':FL_mu_err[:l], 'std_err':FL_std_err[:l], 'g_amp_err':FL_g_amp_err[:l],
-                               'tpeak':FL_tpeak[:l], 'fwhm':FL_fwhm[:l], 'f_amp':FL_f_amp[:l],
-                               'tpeak_err':FL_tpeak_err[:l], 'fwhm_err':FL_fwhm_err[:l],
-                               'f_amp_err':FL_f_amp_err[:l],'f_chisq':FL_f_chisq[:l], 'g_chisq':FL_g_chisq[:l]})
+        flare_out = pd.DataFrame(data={'file':FL_files,'TIC':FL_TICs,
+                               't0':FL_t0, 't1':FL_t1,
+                               'med':FL_f0, 'peak':FL_f1, 'smo_pk':FL_smo_pk, 'smo_sig':FL_smo_sig, 'ed':FL_ed,
+                               'ed_err':FL_ed_err, 'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp,
+                               'mu_err':FL_mu_err, 'std_err':FL_std_err, 'g_amp_err':FL_g_amp_err,
+                               'tpeak':FL_tpeak, 'fwhm':FL_fwhm, 'f_amp':FL_f_amp,
+                               'tpeak_err':FL_tpeak_err, 'fwhm_err':FL_fwhm_err,
+                               'f_amp_err':FL_f_amp_err,'f_chisq':FL_f_chisq, 'g_chisq':FL_g_chisq})
         flare_out.to_csv(sector+ '_flare_out.csv', index=False)
+        if debug:
+            print('Write to flare table (' +str(len(flare_out)) + ' lines)')
             
         param_out = pd.DataFrame(data={'file':ALL_FILES[:l],'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
                                        'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l], 'gp_log_s00':P_gp_log_s00[:l],
