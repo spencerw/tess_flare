@@ -5,12 +5,12 @@ from astropy.table import Table
 from astropy.stats import LombScargle
 import pandas as pd
 import numpy as np
-#import exoplanet as xo
+import exoplanet as xo
 import os
 import celerite
 from celerite import terms
 from scipy.optimize import minimize, curve_fit
-import time
+import time as timing
 import traceback
 
 from flareTools import FINDflare, IRLSSpline, id_segments, update_progress, aflare1, autocorr_estimator
@@ -82,7 +82,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=1, num_iter=20, d
     initial_params = gp.get_parameter_vector()
     
     if debug:
-        print(initial_params, flush=True)
+        print(initial_params)
     
     # Find the best fit kernel parameters. We want to try to ignore the flares
     # when we do the fit. To do this, we will repeatedly find the best fit
@@ -219,7 +219,7 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     
     return ED, ED_err
 
-def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False, gpInterval=15):
+def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clobberGP=False, writeLog=False, writeDFinterval=1, debug=False, gpInterval=15):
  
     # Columns for flare table
     FL_files = np.array([])
@@ -265,17 +265,16 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
     if writeLog:
         if os.path.exists(sector + '.log'):
             os.remove(sector + '.log')
-            with open(sector+'.log', 'a') as f:
-                f.write('{:^15}'.format('') + '{:60}'.format('filename') + '{:20}'.format('time (s)') + '{:10}'.format('resample?') + '{:10}'.format('flares found') + '\n')
 
     for k in range(len(files)):
-        start_time = time.time()
+        print(k)
+        start_time = timing.time()
         filename = files[k].split('/')[-1]
         TIC = int(filename.split('-')[-3])
         print(TIC)
         
         if debug:
-            print('Open ' + files[k], flush=True)
+            print('Open ' + files[k])
 
         gp_data_file = files[k] + '.gp'
         gp_param_file = files[k] + '.gp.par'
@@ -307,7 +306,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
                 P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
                 P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
-                print(files[k].split('/')[-1] + ' failed during reading', flush=True)
+                print(files[k].split('/')[-1] + ' failed during reading')
                 failed_files.append(files[k].split('/')[-1])
                 np.savetxt(gp_data_file, ([]))
                 continue
@@ -316,7 +315,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
             
         if debug:
-            print('Find segments', flush=True)
+            print('Find segments')
         
         # Split data into segments, but put it all back together before doing GP regression
         # We really just want to trim the edges of the segments here
@@ -358,7 +357,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
         
         if debug:
-            print('Estimate periods', flush=True)
+            print('Estimate periods')
         
         acf = autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
                                     yerr=tbl['PDCSAP_FLUX_ERR']/median,
@@ -403,7 +402,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 failed_files.append(files[k].split('/')[-1])
                 continue
                 
-            smo = np.loadtxt(gp_data_file)
+            time, smo = np.loadtxt(gp_data_file)
         else:
             smo = np.zeros(len(df_tbl['TIME']))
             try:
@@ -428,9 +427,11 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 p_signal = np.max(power)/np.median(power)
                 
                 if debug:
-                    print('GP regression finished, saving results to file', flush=True)
-                    
-                np.savetxt(gp_data_file, (smo))
+                    print('GP regression finished, saving results to file')
+                
+                np.savetxt(gp_param_file, params)
+                np.savetxt(gp_data_file, (x, smo))
+                
 
             # If GP regression fails, skip over this light curve and list it at the
             # end of the log file. Write out an empty .gp file
@@ -442,7 +443,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
                 P_gp_log_s01 = np.append(P_gp_log_s01, gp_log_s01)
                 P_gp_log_omega01 = np.append(P_gp_log_omega01, gp_log_omega01)
                 P_gp_log_q1 = np.append(P_gp_log_q1, gp_log_q1)
-                print(files[k].split('/')[-1] + ' failed during GP regression', flush=True)
+                print(files[k].split('/')[-1] + ' failed during GP regression')
                 failed_files.append(files[k].split('/')[-1])
                 np.savetxt(gp_data_file, ([]))
                 continue
@@ -462,25 +463,43 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
 
         if np.sum(ok_cut) < 1000:
             print('Warning: ' + f + ' contains < 1000 good points')
-            
+
+        # Remove flux jumps by masking out sections of the LC where the GP changes
+        # suddenly. Take the rolling STD of the GP and cut ignore sections where
+        # that quantity is larger than the STD of the entire light curve. This
+        # shouldn't mask out flares because the GP should have smoothed over those
+
+        roll = pd.DataFrame(smo).rolling(s_window, center=True).std().values
+        roll = roll.reshape(1, -1)[0]
+        mask = np.isfinite(roll)
+        time = df_tbl['TIME'][mask]
+        flux = df_tbl['PDCSAP_FLUX'][mask]
+        error = df_tbl['PDCSAP_FLUX_ERR'][mask]
+        smo = smo[mask]
+        mask1 = roll[mask] < np.std(smo)
+
+        time = time[mask1]
+        flux = flux[mask1]
+        error = error[mask1]
+        smo = smo[mask1]
+ 
         print('Find flares')
         
         # Search for flares in the smoothed light curve using change point analysis
-        FL = FINDflare(df_tbl['PDCSAP_FLUX']/median - smo, 
-                        df_tbl['PDCSAP_FLUX_ERR']/median,
-                        avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
+        FL = FINDflare(flux/median - smo, error/median,
+                        avg_std=True, std_window=s_window, N1=cpa_param[0], N2=cpa_param[1], N3=cpa_param[2])
 
         for j in range(len(FL[0])):
             if debug:
                 print('Found a flare, fitting model to it')
             
             # Try to fit a flare model to the detection
-            tstart = df_tbl['TIME'].values[FL[0][j]]
-            tstop = df_tbl['TIME'].values[FL[1][j]]
+            tstart = time.values[FL[0][j]]
+            tstop = time.values[FL[1][j]]
             mask = np.isfinite(smo)
-            x = np.array(df_tbl['TIME'])[mask]
-            y = np.array(df_tbl['PDCSAP_FLUX'][mask]/median - smo[mask])
-            yerr =  np.array(df_tbl['PDCSAP_FLUX_ERR'][mask]/median)
+            x = np.array(time)[mask]
+            y = np.array(flux[mask]/median - smo[mask])
+            yerr =  np.array(error[mask]/median)
             popt1, pstd1, g_chisq, popt2, pstd2, f_chisq = vetFlare(x, y, yerr, tstart, tstop)
             
             mu, std, g_amp = popt1[0], popt1[1], popt1[2]
@@ -505,7 +524,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             FL_t1 = np.append(FL_t1, tstop)
             FL_f0 = np.append(FL_f0, median)
             s1, s2 = FL[0][j], FL[1][j]+1
-            FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][s1:s2]))
+            FL_f1 = np.append(FL_f1, np.nanmax(flux[s1:s2]))
             FL_smo_pk = np.append(FL_smo_pk, np.nanmax(y[mask1]))
             FL_smo_sig = np.append(FL_smo_sig, np.nanstd(y[mask1]))
             FL_ed = np.append(FL_ed, ED)
@@ -547,10 +566,10 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
         
         if writeLog:
             if debug:
-                print('Write to logfile', flush=True)
+                print('Write to logfile')
             
             with open(sector+'.log', 'a') as f:
-                time_elapsed = time.time() - start_time
+                time_elapsed = timing.time() - start_time
                 num_flares = len(FL[0])
                 
                 f.write('{:^15}'.format(str(k+1) + '/' + str(len(files))) + \
@@ -574,9 +593,7 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             print('Write to flare table (' +str(len(flare_out)) + ' lines)')
             
         param_out = pd.DataFrame(data={'file':ALL_FILES[:l],'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l],
-                                       'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l], 'gp_log_s00':P_gp_log_s00[:l],
-                                       'gp_log_omega00':P_gp_log_omega00[:l], 'gp_log_s01':P_gp_log_s01[:l],
-                                       'gp_log_omega01':P_gp_log_omega01[:l], 'gp_log_q11':P_gp_log_q1[:l]})
+                                       'ls_per':P_ls_per[:l], 'p_res':P_p_res[:l]})
         param_out.to_csv(sector+ '_param_out.csv', index=False)
         
     print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
@@ -586,117 +603,3 @@ def procFlaresGP(files, sector, makefig=True, clobberPlots=False, clobberGP=Fals
             f.write('\n')
             for fname in failed_files:
                 f.write(fname + ' failed during GP regression\n')
-
-def procFlares(files, sector, makefig=True, clobber=False, smoothType='roll_med', progCounter=False):
-
-    FL_id = np.array([])
-    FL_t0 = np.array([])
-    FL_t1 = np.array([])
-    FL_f0 = np.array([])
-    FL_f1 = np.array([])
-    FL_ed = np.array([])
-
-    for k in range(len(files)):
-        filename = files[k].split('/')[-1]
-
-        with fits.open(files[k], mode='readonly') as hdulist:
-            tess_bjd = hdulist[1].data['TIME']
-            quality = hdulist[1].data['QUALITY']
-            pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
-            pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
-        
-        ok_cut = quality == 0
-        
-        # Split data into segments
-        dt_limit = 12/24 # 12 hours
-        trim = 4/24 # 4 hours
-        istart, istop = id_segments(tess_bjd[ok_cut], dt_limit, dt_trim=trim)
-        for seg_idx in range(len(istart)):
-            tess_bjd_seg = tess_bjd[ok_cut][istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_seg = pdcsap_flux[ok_cut][istart[seg_idx]:istop[seg_idx]]
-            pdcsap_flux_error_seg = pdcsap_flux_error[ok_cut][istart[seg_idx]:istop[seg_idx]]
-            
-            tbl = Table([tess_bjd_seg, pdcsap_flux_seg, pdcsap_flux_error_seg], 
-                         names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
-            df_tbl = tbl.to_pandas()
-
-            median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
-
-            if smoothType == 'spline':
-                smo = IRLSSpline(df_tbl['TIME'].values, df_tbl['PDCSAP_FLUX'].values/median,
-                                 df_tbl['PDCSAP_FLUX_ERR'].values/median)
-            else:
-                acf = xo.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median,
-                                            yerr=tbl['PDCSAP_FLUX_ERR']/median,
-                                            min_period=0.1, max_period=27, max_peaks=2)
-
-                if len(acf['peaks']) > 0:
-                    acf_1dt = acf['peaks'][0]['period']
-                    mask = np.where((acf['autocorr'][0] == acf['peaks'][0]['period']))[0]
-                    acf_1pk = acf['autocorr'][1][mask][0]
-                    s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
-                else:
-                    acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
-                    s_window = 128
-
-                if smoothType == 'roll_med':
-                    smo = df_tbl['PDCSAP_FLUX'].rolling(s_window, center=True).median()
-
-            if makefig:
-                fig, axes = plt.subplots(figsize=(8,8))
-                axes.errorbar(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median,
-                              yerr=df_tbl['PDCSAP_FLUX_ERR']/median, 
-                              linestyle=None, alpha=0.15, label='PDCSAP_FLUX')
-                axes.plot(df_tbl['TIME'], smo/median, label=str(s_window)+'pt median')
-
-                if (acf_1dt > 0):
-                    y = np.nanstd(smo/median)*acf_1pk*np.sin(df_tbl['TIME']/acf_1dt*2*np.pi) + 1
-                    axes.plot(df_tbl['TIME'], y, lw=2, alpha=0.7,
-                             label='ACF='+format(acf_1dt,'6.3f')+'d, pk='+format(acf_1pk,'6.3f'))
-
-            if np.sum(ok_cut) < 1000:
-                print('Warning: ' + f + ' contains < 1000 good points')
-
-            sok_cut = np.isfinite(smo)
-
-            FL = FINDflare((df_tbl['PDCSAP_FLUX'][sok_cut] - smo[sok_cut])/median, 
-                           df_tbl['PDCSAP_FLUX_ERR'][sok_cut]/median,
-                           avg_std=False, N1=4, N2=2, N3=5)
-
-            for j in range(len(FL[0])):
-                FL_id = np.append(FL_id, k)
-                FL_t0 = np.append(FL_t0, df_tbl['TIME'][sok_cut].values[FL[0][j]])
-                FL_t1 = np.append(FL_t1, df_tbl['TIME'][sok_cut].values[FL[1][j]])
-                FL_f0 = np.append(FL_f0, median)
-                s1, s2 = FL[0][j], FL[1][j]+1
-                FL_f1 = np.append(FL_f1, np.nanmax(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]))
-                ed_val = np.trapz(df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2],
-                                  df_tbl['TIME'][sok_cut][s1:s2])
-                FL_ed = np.append(FL_ed, ed_val)
-
-                if makefig:
-                    axes.scatter(df_tbl['TIME'][sok_cut][s1:s2],
-                                 df_tbl['PDCSAP_FLUX'][sok_cut][s1:s2]/median,
-                                 color='r', label='_nolegend_')
-                    axes.scatter([],[], color='r', label='Flare?')        
-
-            if makefig:
-                axes.set_xlabel('Time [BJD - 2457000, days]')
-                axes.set_ylabel('Normalized Flux')
-                axes.legend()
-                axes.set_title(filename)
-
-                figname = filename + '.jpeg'
-                makefig = ((not os.path.exists(figname)) | clobber)
-                plt.savefig(figname, bbox_inches='tight', pad_inches=0.25, dpi=100)
-                plt.close()      
-        
-        if progCounter:
-            update_progress(k / len(files))
-        
-    ALL_TIC = pd.Series(files).str.split('-', expand=True).iloc[:,-3].astype('int')
-    print(str(len(ALL_TIC[FL_id])) + ' flares found across ' + str(len(files)) + ' files')
-    flare_out = pd.DataFrame(data={'TIC':ALL_TIC[FL_id],
-                                   't0':FL_t0, 't1':FL_t1,
-                                   'med':FL_f0, 'peak':FL_f1, 'ed':FL_ed})
-    flare_out.to_csv(sector+ '_flare_out.csv')
