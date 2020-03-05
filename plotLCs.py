@@ -8,7 +8,7 @@ from flareTools import id_segments
 mpl.rcParams.update({'font.size': 18, 'font.family': 'STIXGeneral', 'mathtext.fontset': 'stix',
                             'image.cmap': 'viridis'})
 
-prefix = 'sec1_small'
+prefix = 'sec1'
 path = '/astro/store/gradscratch/tmp/scw7/tessData/lightcurves/' + prefix + '/'
 df = pd.read_csv(prefix+'_flare_out.csv')
 df_par = pd.read_csv(prefix+'_param_out.csv')
@@ -19,10 +19,7 @@ for filename in files:
     tstart = df[df['file'] == filename]['t0'].values
     tstop = df[df['file'] == filename]['t1'].values
     
-    gauss_fit = False
     entry = df[df['file'] == filename]
-    if entry.iloc[0]['g_chisq'] < df.iloc[0]['f_chisq']:
-        gauss_fit = True
     
     fig, axes = plt.subplots(figsize=(16,8), nrows=1, ncols=2)
     
@@ -66,8 +63,10 @@ for filename in files:
     for idx in range(len((tstart))):
         indices = np.where((x >= tstart[idx]) & (x <= tstop[idx]))[0]
         marker = 'o'
-        if gauss_fit:
+        if entry.iloc[idx]['g_chisq'] < entry.iloc[idx]['f_chisq']:
             marker = 'x'
+        if filename == 'tess2018206045859-s0001-0000000025374751-0120-s_lc.fits':
+            print(marker)
         axes[1].plot(x[indices], y[indices], marker)
     axes[1].set_xlabel('Time [BJD - 2457000, days]')
     axes[1].set_ylabel('Normalized Flux')
