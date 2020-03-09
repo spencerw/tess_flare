@@ -110,7 +110,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=1, num_iter=20, d
             print('Warning: all points thrown out (noisy LC?)')
             break
         m = m0
-        if (n_pts == n_pts_prev) or np.fabs(n_pts - n_pts_prev) < 3:
+        if (n_pts == n_pts_prev):
             break
 
     gp.compute(x[m], yerr[m])
