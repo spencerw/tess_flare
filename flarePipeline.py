@@ -484,9 +484,12 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         smo = smo[mask1]
  
         print('Find flares')
+        x = np.array(time)
+        y = np.array(flux/median - smo)
+        yerr =  np.array(error/median)
         
         # Search for flares in the smoothed light curve using change point analysis
-        FL = FINDflare(flux/median - smo, error/median,
+        FL = FINDflare(y, yerr,
                         avg_std=True, std_window=s_window, N1=cpa_param[0], N2=cpa_param[1], N3=cpa_param[2])
 
         for j in range(len(FL[0])):
@@ -495,11 +498,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             
             # Try to fit a flare model to the detection
             tstart = time.values[FL[0][j]]
-            tstop = time.values[FL[1][j]]
-            mask = np.isfinite(smo)
-            x = np.array(time)[mask]
-            y = np.array(flux[mask]/median - smo[mask])
-            yerr =  np.array(error[mask]/median)
+            tstop = time.values[FL[1][j] + 1]
             popt1, pstd1, g_chisq, popt2, pstd2, f_chisq = vetFlare(x, y, yerr, tstart, tstop)
             
             mu, std, g_amp = popt1[0], popt1[1], popt1[2]
@@ -512,7 +511,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
                 print('Flare model fit, measuring ED')
 
             mask1 = (x >= tstart) & (x <= tstop)
-            fl_median = np.nanmedian(smo[mask][mask1])
+            fl_median = np.nanmedian(smo[mask1])
 
             # Now that we have a flare model, measure the equivalent duration
             ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
