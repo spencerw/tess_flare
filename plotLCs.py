@@ -62,11 +62,9 @@ for filename in files:
     axes[1].plot(x, y)
     for idx in range(len((tstart))):
         indices = np.where((x >= tstart[idx]) & (x <= tstop[idx]))[0]
-        marker = 'o'
-        if entry.iloc[idx]['g_chisq'] < entry.iloc[idx]['f_chisq']:
-            marker = 'x'
-        if filename == 'tess2018206045859-s0001-0000000025374751-0120-s_lc.fits':
-            print(marker)
+        marker = 'x'
+        if (entry.iloc[idx]['g_chisq']/entry.iloc[idx]['f_chisq'] > 2) and (entry.iloc[idx]['ed_err']*3 < entry.iloc[idx]['ed']):
+            marker = 'o'
         axes[1].plot(x[indices], y[indices], marker)
     axes[1].set_xlabel('Time [BJD - 2457000, days]')
     axes[1].set_ylabel('Normalized Flux')
