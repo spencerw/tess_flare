@@ -213,9 +213,14 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     except IndexError:
         return -1, -1
     
+    dx = np.diff(x)
+    x = x[:-1]
+    y = y[:-1]
+    yerr = yerr[:-1]
     mask = (x > x[istart]) & (x < x[istop])
     ED = np.trapz(y[mask], x[mask])
-    ED_err = np.sqrt(np.trapz(yerr[mask], x[mask])**2)
+    #ED_err = np.sqrt(np.trapz(yerr[mask], x[mask])**2)
+    ED_err = np.sqrt(np.sum((dx[mask]*yerr[mask])**2))
     
     return ED, ED_err
 
@@ -466,17 +471,18 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
 
         # Remove flux jumps by masking out sections of the LC where the GP changes
         # suddenly. Take the rolling STD of the GP and cut ignore sections where
-        # that quantity is larger than the STD of the entire light curve. This
-        # shouldn't mask out flares because the GP should have smoothed over those
+        # that quantity exceeds 3 sigma. Thisshouldn't mask out flares because the
+        # GP should have smoothed over those
 
-        roll = pd.DataFrame(smo).rolling(s_window, center=True).std().values
+        # 15 point window = 30 minutes
+        roll = pd.DataFrame(smo).rolling(15, center=True).std().values
         roll = roll.reshape(1, -1)[0]
         mask = np.isfinite(roll)
         time = df_tbl['TIME'][mask]
         flux = df_tbl['PDCSAP_FLUX'][mask]
         error = df_tbl['PDCSAP_FLUX_ERR'][mask]
         smo = smo[mask]
-        mask1 = roll[mask] < np.std(smo)
+        mask1 = roll[mask] < 3*np.nanstd(roll[mask])
 
         time = time[mask1]
         flux = flux[mask1]
