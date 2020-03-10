@@ -6,7 +6,7 @@
 
 for i in `seq $1 $2`; do
 	echo $i " of " $3 " started"
-        python doFlaresGaussProc.py $i $3 >& output.p$i &
+        python doFlaresSec1.py $i $3 >& output.p$i &
 	pids[${i}]=$!
 done
 
