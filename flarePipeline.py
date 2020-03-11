@@ -1,8 +1,9 @@
 import matplotlib as mpl
-#import matplotlib.pylab as plt
+import matplotlib.pylab as plt
 from astropy.io import fits
 from astropy.table import Table
 from astropy.stats import LombScargle
+import astropy.units as u
 import pandas as pd
 import numpy as np
 import exoplanet as xo
@@ -316,15 +317,24 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
                 np.savetxt(gp_data_file, ([]))
                 continue
             
+        # Trim out windows around where the quality flag = 512 (impulsive outlier)
+        jump_times = tess_bjd[quality == 512]
+        jump_mask = np.ones(len(tess_bjd), dtype=np.bool)
+
+        window = (6*u.hour).to(u.d).value
+
+        for times in jump_times:
+            jump_mask[(tess_bjd >= times - window) & (tess_bjd <= times + window)] = 0        
+
         # There were a few cases where NaN values had quality = 0
-        ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
+        ok_cut = (jump_mask == 1) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
             
         if debug:
             print('Find segments')
         
         # Split data into segments, but put it all back together before doing GP regression
         # We really just want to trim the edges of the segments here
-        dt_limit = 12/24 # 12 hours
+        """dt_limit = 12/24 # 12 hours
         trim = 4/24 # 4 hours
         istart, istop = id_segments(tess_bjd[ok_cut], dt_limit, dt_trim=trim)
         
@@ -339,7 +349,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             
             tess_bjd_trim = np.concatenate((tess_bjd_trim, tess_bjd_seg), axis=0)
             pdcsap_flux_trim = np.concatenate((pdcsap_flux_trim, pdcsap_flux_seg), axis=0)
-            pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)
+            pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)"""
             
         # Mask out eclipses and transits
         # Leave this disabled for now, introduces problems with bottoms of starspot oscillations
@@ -355,7 +365,9 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         pdcsap_flux_trim = pdcsap_flux_trim[mask]
         pdcsap_flux_error_trim = pdcsap_flux_error_trim[mask]"""
             
-        tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
+        #tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
+        #             names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
+        tbl = Table([tess_bjd[ok_cut], pdcsap_flux[ok_cut], pdcsap_flux_error[ok_cut]], 
                      names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
         df_tbl = tbl.to_pandas()
 
@@ -475,7 +487,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         # GP should have smoothed over those
 
         # 15 point window = 30 minutes
-        roll = pd.DataFrame(smo).rolling(15, center=True).std().values
+        """roll = pd.DataFrame(smo).rolling(15, center=True).std().values
         roll = roll.reshape(1, -1)[0]
         mask = np.isfinite(roll)
         time = df_tbl['TIME'][mask]
@@ -487,7 +499,10 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         time = time[mask1]
         flux = flux[mask1]
         error = error[mask1]
-        smo = smo[mask1]
+        smo = smo[mask1]"""
+        time = df_tbl['TIME']
+        flux = df_tbl['PDCSAP_FLUX']
+        error = df_tbl['PDCSAP_FLUX_ERR']
  
         print('Find flares')
         x = np.array(time)
@@ -519,8 +534,17 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             mask1 = (x >= tstart) & (x <= tstop)
             fl_median = np.nanmedian(smo[mask1])
 
+            dx_fac = 2
+            dx = tstop - tstart
+            x1 = tstart - dx*dx_fac/2
+            x2 = tstop + dx*dx_fac/2
+    
+            xmodel = np.linspace(x1, x2)
+            ymodel = aflare1(xmodel, popt2[0], popt2[1], popt2[2])
+
             # Now that we have a flare model, measure the equivalent duration
             ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
+            print((ED*u.d).to(u.s), (ED_err*u.d).to(u.s), f_chisq, g_chisq, tstart, tstop, s_window)
             
             FL_files = np.append(FL_files, filename)
             FL_TICs = np.append(FL_TICs, TIC)

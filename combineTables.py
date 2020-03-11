@@ -2,7 +2,7 @@ import pandas as pd
 import glob as gl
 
 # flare files
-all_files = gl.glob('7.rerun.gauss*_flare_out.csv')
+all_files = gl.glob('*_flare_out.csv')
 prefix = all_files[0].split('.p')[0]
 
 df_1 = pd.read_csv(all_files[0])
@@ -14,7 +14,7 @@ for f in all_files[1:]:
 df_1.to_csv(prefix+ '_flare_out.csv', index=False)
 
 # param files
-all_files = gl.glob('7.rerun.gauss*_param_out.csv')
+all_files = gl.glob('*_param_out.csv')
 prefix = all_files[0].split('.p')[0]
 
 df_1 = pd.read_csv(all_files[0])
