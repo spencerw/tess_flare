@@ -1,16 +1,18 @@
 import matplotlib as mpl
-import matplotlib.pylab as plt
+#import matplotlib.pylab as plt
 from astropy.io import fits
+import astropy.units as u
 from astropy.table import Table
 from astropy.stats import LombScargle
-import astropy.units as u
 import pandas as pd
 import numpy as np
-import exoplanet as xo
+#import exoplanet as xo
 import os
 import celerite
 from celerite import terms
 from scipy.optimize import minimize, curve_fit
+from scipy import stats
+from scipy import signal
 import time as timing
 import traceback
 
@@ -95,6 +97,7 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=1, num_iter=20, d
     for i in range(num_iter):
         if debug:
             print('Iteration ' + str(i))
+        n_pts_prev = np.sum(m)
         gp.compute(x[m], yerr[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
                         method='L-BFGS-B', bounds=bounds, args=(y, gp, m))
@@ -102,15 +105,15 @@ def iterGaussProc(time, flux, flux_err, period_guess, interval=1, num_iter=20, d
         initial_params = soln.x
         mu = gp.predict(y[m], x, return_cov=False, return_var=False)
         var = np.nanvar(y - mu)
-        sig = np.sqrt(var + yerr**2)
+        sig = np.sqrt(var)
 
-        m0 = y - mu < 1.3 * sig
-        n_pts_prev = np.sum(m)
-        n_pts = np.sum(m0)
-        if n_pts == 0:
-            print('Warning: all points thrown out (noisy LC?)')
+        m0 = y - mu < sig
+        m[m==1] = m0[m==1]
+        n_pts = np.sum(m)
+        print(n_pts_prev, n_pts)
+        if n_pts <= 1000:
+            raise ValueError('GP iteration threw out too many points')
             break
-        m = m0
         if (n_pts == n_pts_prev):
             break
 
@@ -163,8 +166,17 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
     mu0 = (tstart + tstop)/2
     sig0 = (tstop - tstart)/2
     A0 = 1
+    skew = 0
 
     try:
+        # Get the skew by treating time = x and flux = p(x). Calculate the
+        # third moment of p(x)
+        A = 1/np.trapz(y[mask], x[mask])
+        mu = np.trapz(x[mask]*A*y[mask], x[mask])
+        var = np.trapz((x[mask] - mu)**2*A*y[mask], x[mask])
+        stddev = np.sqrt(np.fabs(var))
+        skew = np.trapz((x[mask] - mu)**3*A*y[mask], x[mask])/stddev**3
+
         # Fit a gaussian to the segment
         popt1, pcov1 = curve_fit(gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
         y_model = gaussian(x[mask], popt1[0], popt1[1], popt1[2])
@@ -176,9 +188,13 @@ def vetFlare(x, y, yerr, tstart, tstop, dx_fac=5):
         chi2 = redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
     except:
         empty = np.zeros(3)
-        return empty, empty, -1, empty, empty, -1    
+        return empty, empty, -1, empty, empty, -1, 0, 0
 
-    return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2
+    n_pts = len(x[mask])
+    n_pts_true = np.floor(((x2-x1)*u.d).to(u.min).value/2)
+    coverage = n_pts/n_pts_true
+
+    return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2, skew, coverage
 
 def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     '''
@@ -206,22 +222,24 @@ def measure_ED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
         ED - Equivalent duration of the flare
         ED_err - The uncertainty in the equivalent duration
     '''
+    print(tpeak, fwhm)
     try:
         width = fwhm*num_fwhm
         istart = np.argwhere(x > tpeak - width/2)[0]
         ipeak = np.argwhere(x > tpeak)[0]
         istop = np.argwhere(x > tpeak + width/2)[0]
+    
+        dx = np.diff(x)
+        x = x[:-1]
+        y = y[:-1]
+        yerr = yerr[:-1]
+        mask = (x > x[istart]) & (x < x[istop])
+        ED = np.trapz(y[mask], x[mask])
+        #ED_err = np.sqrt(np.trapz(yerr[mask], x[mask])**2)
+        ED_err = np.sqrt(np.sum((dx[mask]*yerr[mask])**2))
+
     except IndexError:
         return -1, -1
-    
-    dx = np.diff(x)
-    x = x[:-1]
-    y = y[:-1]
-    yerr = yerr[:-1]
-    mask = (x > x[istart]) & (x < x[istop])
-    ED = np.trapz(y[mask], x[mask])
-    #ED_err = np.sqrt(np.trapz(yerr[mask], x[mask])**2)
-    ED_err = np.sqrt(np.sum((dx[mask]*yerr[mask])**2))
     
     return ED, ED_err
 
@@ -239,6 +257,8 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
     FL_smo_sig = np.array([])
     FL_ed = np.array([])
     FL_ed_err = np.array([])
+    FL_skew = np.array([])
+    FL_cover = np.array([])
     FL_mu = np.array([])
     FL_std = np.array([])
     FL_g_amp = np.array([])
@@ -317,25 +337,16 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
                 np.savetxt(gp_data_file, ([]))
                 continue
             
-        # Trim out windows around where the quality flag = 512 (impulsive outlier)
-        jump_times = tess_bjd[quality == 512]
-        jump_mask = np.ones(len(tess_bjd), dtype=np.bool)
-
-        window = (6*u.hour).to(u.d).value
-
-        for times in jump_times:
-            jump_mask[(tess_bjd >= times - window) & (tess_bjd <= times + window)] = 0        
-
         # There were a few cases where NaN values had quality = 0
-        ok_cut = (jump_mask == 1) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
+        ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) & (~np.isnan(pdcsap_flux_error))
             
         if debug:
             print('Find segments')
         
         # Split data into segments, but put it all back together before doing GP regression
         # We really just want to trim the edges of the segments here
-        """dt_limit = 12/24 # 12 hours
-        trim = 4/24 # 4 hours
+        dt_limit = 12/24 # 12 hours
+        trim = 12/24 # 4 hours
         istart, istop = id_segments(tess_bjd[ok_cut], dt_limit, dt_trim=trim)
         
         tess_bjd_trim = np.array([])
@@ -349,7 +360,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             
             tess_bjd_trim = np.concatenate((tess_bjd_trim, tess_bjd_seg), axis=0)
             pdcsap_flux_trim = np.concatenate((pdcsap_flux_trim, pdcsap_flux_seg), axis=0)
-            pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)"""
+            pdcsap_flux_error_trim = np.concatenate((pdcsap_flux_error_trim, pdcsap_flux_error_seg), axis=0)
             
         # Mask out eclipses and transits
         # Leave this disabled for now, introduces problems with bottoms of starspot oscillations
@@ -365,9 +376,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         pdcsap_flux_trim = pdcsap_flux_trim[mask]
         pdcsap_flux_error_trim = pdcsap_flux_error_trim[mask]"""
             
-        #tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
-        #             names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
-        tbl = Table([tess_bjd[ok_cut], pdcsap_flux[ok_cut], pdcsap_flux_error[ok_cut]], 
+        tbl = Table([tess_bjd_trim, pdcsap_flux_trim, pdcsap_flux_error_trim], 
                      names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
         df_tbl = tbl.to_pandas()
 
@@ -482,27 +491,27 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             print('Warning: ' + f + ' contains < 1000 good points')
 
         # Remove flux jumps by masking out sections of the LC where the GP changes
-        # suddenly. Take the rolling STD of the GP and cut ignore sections where
-        # that quantity exceeds 3 sigma. Thisshouldn't mask out flares because the
-        # GP should have smoothed over those
+        # suddenly. Take the rolling STD of the GP, smooth it with a gaussian, and
+        # cut out sections where this quantity exceeds 1 sigma. This shouldn't mask
+        # out flares because the GP should have smoothed over those
 
-        # 15 point window = 30 minutes
-        """roll = pd.DataFrame(smo).rolling(15, center=True).std().values
+        # 30 minute window (15 data points)
+        roll = pd.DataFrame(smo).rolling(15, center=True).std().values
         roll = roll.reshape(1, -1)[0]
         mask = np.isfinite(roll)
         time = df_tbl['TIME'][mask]
         flux = df_tbl['PDCSAP_FLUX'][mask]
         error = df_tbl['PDCSAP_FLUX_ERR'][mask]
         smo = smo[mask]
-        mask1 = roll[mask] < 3*np.nanstd(roll[mask])
+        print(s_window)
+        w = signal.gaussian(s_window, s_window)
+        y = np.convolve(w/w.sum(), roll[mask],mode='same')
+        mask1 = y < np.nanstd(roll[mask])
 
         time = time[mask1]
         flux = flux[mask1]
         error = error[mask1]
-        smo = smo[mask1]"""
-        time = df_tbl['TIME']
-        flux = df_tbl['PDCSAP_FLUX']
-        error = df_tbl['PDCSAP_FLUX_ERR']
+        smo = smo[mask1]
  
         print('Find flares')
         x = np.array(time)
@@ -518,9 +527,18 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
                 print('Found a flare, fitting model to it')
             
             # Try to fit a flare model to the detection
+            # Mask out other flare detections when fitting models
+            other_mask = np.ones(len(time), dtype=bool)
+            for i in range(len(FL[0])):
+                s1other, s2other = FL[0][i], FL[1][i]+1
+                if i == j:
+                    continue
+                other_mask[s1other:s2other] = 0
             tstart = time.values[FL[0][j]]
             tstop = time.values[FL[1][j] + 1]
-            popt1, pstd1, g_chisq, popt2, pstd2, f_chisq = vetFlare(x, y, yerr, tstart, tstop)
+            popt1, pstd1, g_chisq, popt2, pstd2, f_chisq, skew, cover = \
+                vetFlare(x[other_mask], y[other_mask], yerr[other_mask], tstart, tstop)
+            print(g_chisq, f_chisq, skew, cover)
             
             mu, std, g_amp = popt1[0], popt1[1], popt1[2]
             mu_err, std_err, g_amp_err = pstd1[0], pstd1[1], pstd1[2]
@@ -534,17 +552,8 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             mask1 = (x >= tstart) & (x <= tstop)
             fl_median = np.nanmedian(smo[mask1])
 
-            dx_fac = 2
-            dx = tstop - tstart
-            x1 = tstart - dx*dx_fac/2
-            x2 = tstop + dx*dx_fac/2
-    
-            xmodel = np.linspace(x1, x2)
-            ymodel = aflare1(xmodel, popt2[0], popt2[1], popt2[2])
-
             # Now that we have a flare model, measure the equivalent duration
             ED, ED_err = measure_ED(x, y, yerr, tpeak, fwhm)
-            print((ED*u.d).to(u.s), (ED_err*u.d).to(u.s), f_chisq, g_chisq, tstart, tstop, s_window)
             
             FL_files = np.append(FL_files, filename)
             FL_TICs = np.append(FL_TICs, TIC)
@@ -559,6 +568,8 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
             FL_ed = np.append(FL_ed, ED)
             FL_ed_err = np.append(FL_ed_err, ED_err)
             
+            FL_skew = np.append(FL_skew, skew)
+            FL_cover = np.append(FL_cover, cover)
             FL_mu = np.append(FL_mu, mu)
             FL_std = np.append(FL_std, std)
             FL_g_amp = np.append(FL_g_amp, g_amp)
@@ -612,7 +623,7 @@ def procFlaresGP(files, sector, cpa_param, makefig=True, clobberPlots=False, clo
         flare_out = pd.DataFrame(data={'file':FL_files,'TIC':FL_TICs,
                                't0':FL_t0, 't1':FL_t1,
                                'med':FL_f0, 'peak':FL_f1, 'smo_pk':FL_smo_pk, 'smo_sig':FL_smo_sig, 'ed':FL_ed,
-                               'ed_err':FL_ed_err, 'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp,
+                               'ed_err':FL_ed_err, 'skew':FL_skew, 'cover':FL_cover, 'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp,
                                'mu_err':FL_mu_err, 'std_err':FL_std_err, 'g_amp_err':FL_g_amp_err,
                                'tpeak':FL_tpeak, 'fwhm':FL_fwhm, 'f_amp':FL_f_amp,
                                'tpeak_err':FL_tpeak_err, 'fwhm_err':FL_fwhm_err,

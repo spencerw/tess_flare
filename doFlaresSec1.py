@@ -21,7 +21,7 @@ print(str(len(file_subset)) + ' total files')
 print(file_subset[0] + ' to ' + file_subset[-1])
 
 cpa_param = [3, 1, 3]
-procFlaresGP(file_subset, 'sec1.p' + str(proc_num), cpa_param, makefig=False, clobberPlots=True, clobberGP=False, writeLog=True, debug=True, gpInterval=1)
+procFlaresGP(file_subset, 'sec1.p' + str(proc_num), cpa_param, makefig=False, clobberPlots=True, clobberGP=True, writeLog=True, debug=True, gpInterval=1)
 
 print(str(proc_num) + ' finished!')
 exit()
