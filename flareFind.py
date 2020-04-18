@@ -7,8 +7,9 @@ from astropy.io import fits
 from astropy.table import Table
 import celerite
 from celerite import terms
-from scipy.optimize import minimize
+from scipy.optimize import minimize, curve_fit
 from scipy import signal
+import astropy.units as u
 
 import flareHelpers as fh
 
@@ -106,47 +107,53 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 				print(filename + ' failed during GP fitting')
 				continue
 
-		# Remove flux jumps by masking out sections of the LC where the GP changes
-		# suddenly. Take the rolling STD of the GP, smooth it with a gaussian, and
-		# cut out sections where this quantity exceeds 1 sigma. This shouldn't mask
-		# out flares because the GP should have smoothed over those
+		# Before running the flare finder, exclude regions where there are large flux jumps
+		# These are detected by looking for regions where the rolling std of the GP gets
+		# large.
 
-		# 30 minute window (15 data points)
-		roll = pd.DataFrame(smo).rolling(15, center=True).std().values.reshape(1, -1)[0]
-		mask = np.isfinite(roll)
-		roll = roll[mask]
+		# There can be chunks missing from the lightcurve, so set window size by time, not
+		# number of points
+		df = pd.DataFrame({'smo':smo})
+		df.index = pd.to_datetime((tbl['TIME']*u.d).to(u.min).value, unit='m')
+		roll = df.rolling('30min').std()['smo'].values.reshape(1, -1)[0]
+		roll[~np.isfinite(roll)] = 0
 		roll_max = pd.DataFrame(roll).rolling(s_window, center=True).max().values.reshape(1, -1)[0]
-		time = df_tbl['TIME'][mask]
-		flux = df_tbl['PDCSAP_FLUX'][mask]
-		error = df_tbl['PDCSAP_FLUX_ERR'][mask]
-		smo = smo[mask]
 
 		roll_cut = 3*np.nanstd(roll)
 
-		mask1 = roll_max < roll_cut
+		mask_roll = roll_max < roll_cut
 
 		if makePlots:
-			axes[2].scatter(time, roll, s=1)
-			axes[2].scatter(time, roll_max, s=1)
+			axes[2].scatter(tbl['TIME'], roll, s=1)
+			axes[2].scatter(tbl['TIME'], roll_max, s=1)
 			axes[2].axhline(roll_cut, color='r')
 
-		time = time[mask1]
-		flux = flux[mask1]
-		error = error[mask1]
-		smo = smo[mask1]
-
 		# Search for flares in the smoothed lightcurve
-		x = np.array(time)
-		y = np.array(flux/median - smo)
-		yerr =  np.array(error/median)
-		FL = fh.FINDflare(y, yerr, avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
+		x = np.array(tbl['TIME'])
+		y = np.array(tbl['PDCSAP_FLUX']/median - smo)
+		yerr =  np.array(tbl['PDCSAP_FLUX_ERR']/median)
+
+		FL = fh.FINDflare(y[mask_roll], yerr[mask_roll], avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
+		
+		if makePlots:
+			axes[3].plot(x[mask_roll], y[mask_roll])
+			for j in range(len(FL[0])):
+				s1, s2 = FL[0][j], FL[1][j]+1
+				axes[3].scatter(tbl['TIME'][mask_roll][s1:s2], tbl['PDCSAP_FLUX'][mask_roll][s1:s2]/median-smo[mask_roll][s1:s2])
 
 		# Measure properties of detected flares
-		axes[3].plot(x, y)
 		for j in range(len(FL[0])):
-			print('Flare found')
-			s1, s2 = FL[0][j], FL[1][j]+1
-			axes[3].scatter(time[s1:s2], flux[s1:s2]/median-smo[s1:s2])
+			tstart = x[FL[0][j]]
+			tstop = x[FL[1][j] + 1]
+			popt1, pstd1, g_chisq, popt2, pstd2, f_chisq, skew, cover = \
+			    measureFlare(x, y, yerr, tstart, tstop)
+			print(g_chisq, f_chisq, skew, cover)
+
+			mu, std, g_amp = popt1[0], popt1[1], popt1[2]
+			mu_err, std_err, g_amp_err = pstd1[0], pstd1[1], pstd1[2]
+			    
+			tpeak, fwhm, f_amp = popt2[0], popt2[1], popt2[2]
+			tpeak_err, fwhm_err, f_amp_err = pstd2[0], pstd2[1], pstd2[2]
 
 		if makePlots:
 			axes[0].set_xlabel('Time [BJD - 2457000, days]')
@@ -158,6 +165,46 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 			axes[3].set_xlabel('Time [BJD - 2457000, days]')
 			axes[3].set_ylabel('Normalized Flux - GP')
 			plt.savefig(plots_path + filename + '.png', format='png')
+
+def measureFlare(x, y, yerr, tstart, tstop, dx_fac=5):
+	dx = tstop - tstart
+	x1 = tstart - dx*dx_fac/2
+	x2 = tstop + dx*dx_fac/2
+	mask = (x > x1) & (x < x2)
+
+	mu0 = (tstart + tstop)/2
+	sig0 = (tstop - tstart)/2
+	A0 = 1
+	skew = 0
+
+	try:
+		# Measure the skew by treating time = x and flux = p(x). Calculate the
+		# third moment of p(x)
+		A = 1/np.trapz(y[mask], x[mask])
+		mu = np.trapz(x[mask]*A*y[mask], x[mask])
+		var = np.trapz((x[mask] - mu)**2*A*y[mask], x[mask])
+		stddev = np.sqrt(np.fabs(var))
+		skew = np.trapz((x[mask] - mu)**3*A*y[mask], x[mask])/stddev**3
+
+		# Fit a gaussian to the segment
+		popt1, pcov1 = curve_fit(fh.gaussian, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+		y_model = fh.gaussian(x[mask], popt1[0], popt1[1], popt1[2])
+		chi1 = fh.redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+
+		# Fit the Davenport 2014 flare model to the segment
+		popt2, pcov2 = curve_fit(fh.aflare1, x[mask], y[mask], p0=(mu0, sig0, A0), sigma=yerr[mask])
+		y_model = fh.aflare1(x[mask], popt2[0], popt2[1], popt2[2])
+		chi2 = fh.redChiSq(y_model, y[mask], yerr[mask], len(y[mask]) - 3)
+	except:
+		traceback.print_exc()
+		empty = np.zeros(3)
+		return empty, empty, -1, empty, empty, -1, 0, 0
+
+	n_pts = len(x[mask])
+	n_pts_true = np.floor(((x2-x1)*u.d).to(u.min).value/2)
+	coverage = n_pts/n_pts_true
+
+	return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2, skew, coverage
 
 def iterGP(x, y, yerr, period_guess, num_iter=20, ax=None):
     # Here is the kernel we will use for the GP regression
@@ -222,7 +269,7 @@ def iterGP(x, y, yerr, period_guess, num_iter=20, ax=None):
         if ax:
         	ax.plot(x, mu)
 
-        m0 = y - mu < sig
+        m0 = y - mu < 0.5*sig
         m[m==1] = m0[m==1]
         n_pts = np.sum(m)
         print(n_pts_prev, n_pts)
