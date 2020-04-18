@@ -1,0 +1,25 @@
+tess2018206045859-s0001-0000000031740375-0120-s_lc.fits
+# Two small flares and one big one
+
+tess2018206045859-s0001-0000000029779873-0120-s_lc.fits
+# At least 5 good flares, maybe more. Noisy star
+
+tess2019112060037-s0011-0000000425064757-0143-s_lc.fits
+# No flares, eclipsing binary
+
+tess2019169103026-s0013-0000000143699381-0146-s_lc.fits
+# No flares, big gaussian blip partway through
+
+tess2018206045859-s0001-0000000092873799-0120-s_lc.fits
+# Variable star, flux jumps partway through
+
+tess2018206045859-s0001-0000000389363695-0120-s_lc.fits
+# More flux jumps
+
+tess2018206045859-s0001-0000000032150630-0120-s_lc.fits
+# EB with a flare (the flare is close to the secondary eclipse)
+
+tess2018206045859-s0001-0000000053842685-0120-s_lc.fits
+# Junk LC, no transits
+
+# Still looking for: complex flare, 2 close together flux jumps

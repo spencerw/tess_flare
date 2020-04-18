@@ -6,3 +6,8 @@ output.*
 slurm-*
 jobfile[0-9]*
 failed.txt
+.DS_Store
+__pycache__/
+test_files/.DS_Store
+test_files/gp/
+test_files/plots/
