@@ -3,6 +3,8 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 
 def gaussian(x, mu, sigma, A):
+    if sigma <= 0 or A <= 0:
+        return np.inf
     return A/np.sqrt(2*np.pi*sigma**2)*np.exp(-(x - mu)**2/sigma**2/2)
 
 def redChiSq(y_model, ydata, yerr, dof):
@@ -235,6 +237,11 @@ def aflare1(t, tpeak, fwhm, ampl, upsample=False, uptime=10):
     flare : 1-d array
         The flux of the flare model evaluated at each time
     '''
+
+    # Large weight for bad parameters, for least squares fitting
+    if fwhm <= 0 or ampl <= 0:
+        return np.inf
+
     _fr = [1.00000, 1.94053, -0.175084, -2.24588, -1.12498]
     _fd = [0.689008, -1.60053, 0.302963, -0.278318]
 
