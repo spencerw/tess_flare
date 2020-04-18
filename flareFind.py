@@ -10,13 +10,14 @@ from celerite import terms
 from scipy.optimize import minimize, curve_fit
 from scipy import signal
 import astropy.units as u
+import time as timing
 
 import flareHelpers as fh
 
 # Debugging stuff, remove later
 import traceback
 
-def procFlares(filenames, path, clobberGP=False, makePlots=False):
+def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeLog=True):
 	if makePlots:
 		plots_path = path + 'plots/'
 		if not os.path.exists(plots_path):
@@ -27,7 +28,19 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 	if not os.path.exists(gp_path):
 		os.makedirs(gp_path)
 
+	if writeLog:
+		if os.path.exists(path + prefix + '.log'):
+			os.remove(path + prefix + '.log')
+
+	# Columns for param table
+	P_median = np.array([])
+	P_s_window = np.array([])
+	P_acf_1dt = np.array([])
+
+	failed_files = []
+
 	for k in range(len(filenames)):
+		start_time = timing.time()
 		filename = filenames[k]
 		file = path + filename
 
@@ -35,6 +48,18 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 			fig, axes = plt.subplots(figsize=(16,16), nrows=4, sharex=True)
 		
 		print('Processing ' + filename)
+		gp_data_file = gp_path + filename + '.gp'
+		gp_param_file = gp_path + filename + '.gp.par'
+		median = -1
+		s_window = -1
+		acf_1dt = -1
+		ls_per = -1
+		p_signal = -1
+		gp_log_s00 = -1
+		gp_log_omega00 = -1
+		gp_log_s01 = -1
+		gp_log_omega01 = -1
+		gp_log_q1 = -1
 		with fits.open(file, mode='readonly') as hdulist:
 			try:
 				tess_bjd = hdulist[1].data['TIME']
@@ -42,6 +67,12 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 				pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
 				pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
 			except:
+				P_median = np.append(P_median, median)
+				P_s_window = np.append(P_s_window, s_window)
+				P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
+				P_p_res = np.append(P_p_res, p_signal)
+				failed_files.append(filename)
+				np.savetxt(gp_data_file, ([]))
 				print('Reading file ' + filename + ' failed')
 				continue
 
@@ -59,7 +90,7 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 
 		# Estimate the period of the LC with autocorrelation
 		acf = fh.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median, \
-			                        yerr=tbl['PDCSAP_FLUX_ERR']/median,
+		                            yerr=tbl['PDCSAP_FLUX_ERR']/median,
 		                            min_period=0.1, max_period=27, max_peaks=2)
 		if len(acf['peaks']) > 0:
 			acf_1dt = acf['peaks'][0]['period']
@@ -70,9 +101,11 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 			acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
 			s_window = 128
 
+		P_median = np.append(P_median, median)
+		P_s_window = np.append(P_s_window, s_window)
+		P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
+
 		# Run GP fit on the lightcurve if we haven't already
-		gp_data_file = gp_path + filename + '.gp'
-		gp_param_file = gp_path + filename + '.gp.par'
 		if os.path.exists(gp_data_file) and not clobberGP:
 			# Failed GP regression will produce an empty file
 			if os.path.getsize(gp_data_file) == 0:
@@ -92,7 +125,6 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 				smo, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
 				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, ax=ax)
 
-				# GP best fit parameters, be sure to write these to the param table
 				gp_log_s00 = params[0]
 				gp_log_omega00 = params[1]
 				gp_log_s01 = params[2]
@@ -104,6 +136,8 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 
 			except:
 				traceback.print_exc()
+				failed_files.append(filename)
+				np.savetxt(gp_data_file, ([]))
 				print(filename + ' failed during GP fitting')
 				continue
 
@@ -156,7 +190,6 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 			x2 = tstop + dx*dx_fac/2
 			mask = (x > x1) & (x < x2)
 
-			# These skew values look wrong
 			popt1, pstd1, g_chisq, popt2, pstd2, f_chisq, skew, cover = \
 			    measureFlare(x, y, yerr, x1, x2)
 
@@ -200,6 +233,31 @@ def procFlares(filenames, path, clobberGP=False, makePlots=False):
 			if len(FL[0] > 0):
 				fig_fl.suptitle(filename)
 				fig_fl.savefig(plots_path + filename + '_flares.png', format='png')
+
+		if writeLog:
+			with open(path + prefix + '.log', 'a') as f:
+				time_elapsed = timing.time() - start_time
+				num_flares = len(FL[0])
+
+				f.write('{:^15}'.format(str(k+1) + '/' + str(len(filenames))) + \
+				        '{:<60}'.format(filename) + '{:<20}'.format(time_elapsed) + '{:<10}'.format(num_flares) + '\n')
+
+		# Periodically write to the flare table file and param table file
+		l = k+1
+		ALL_TIC = pd.Series(filenames).str.split('-', expand=True).iloc[:,-3].astype('int')
+		ALL_FILES = pd.Series(filenames).str.split('/', expand=True).iloc[:,-1]
+		"""flare_out = pd.DataFrame(data={'file':FL_files,'TIC':FL_TICs,
+		                       't0':FL_t0, 't1':FL_t1,
+		                       'med':FL_f0, 'peak':FL_f1, 'smo_pk':FL_smo_pk, 'smo_sig':FL_smo_sig, 'ed':FL_ed,
+		                       'ed_err':FL_ed_err, 'skew':FL_skew, 'cover':FL_cover, 'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp,
+		                       'mu_err':FL_mu_err, 'std_err':FL_std_err, 'g_amp_err':FL_g_amp_err,
+		                       'tpeak':FL_tpeak, 'fwhm':FL_fwhm, 'f_amp':FL_f_amp,
+		                       'tpeak_err':FL_tpeak_err, 'fwhm_err':FL_fwhm_err,
+		                       'f_amp_err':FL_f_amp_err,'f_chisq':FL_f_chisq, 'g_chisq':FL_g_chisq})
+		flare_out.to_csv(sector+ '_flare_out.csv', index=False)"""
+		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], \
+			                           'acf_1dt':P_acf_1dt[:l]})
+		param_out.to_csv(prefix + '_param_out.csv', index=False)
 
 def measureFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	mask = (x > tstart) & (x < tstop)
