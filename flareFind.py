@@ -8,7 +8,6 @@ from astropy.table import Table
 import celerite
 from celerite import terms
 from scipy.optimize import minimize, curve_fit
-from scipy import signal
 import astropy.units as u
 import time as timing
 
@@ -32,6 +31,35 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		if os.path.exists(path + prefix + '.log'):
 			os.remove(path + prefix + '.log')
 
+	# Columns for flare table
+	FL_files = np.array([])
+	FL_TICs = np.array([])
+	FL_id = np.array([])
+	FL_t0 = np.array([])
+	FL_t1 = np.array([])
+	FL_f0 = np.array([])
+	FL_f1 = np.array([])
+	FL_ed = np.array([])
+	FL_ed_err = np.array([])
+	FL_skew = np.array([])
+	FL_cover = np.array([])
+	FL_mu = np.array([])
+	FL_std = np.array([])
+	FL_g_amp = np.array([])
+	FL_mu_err = np.array([])
+	FL_std_err = np.array([])
+	FL_g_amp_err = np.array([])
+	FL_tpeak = np.array([])
+	FL_fwhm = np.array([])
+	FL_f_amp = np.array([])
+	FL_tpeak_err = np.array([])
+	FL_fwhm_err = np.array([])
+	FL_f_amp_err = np.array([])
+	FL_g_chisq = np.array([])
+	FL_f_chisq = np.array([])
+	FL_g_fwhm_win = np.array([])
+	FL_f_fwhm_win = np.array([])
+
 	# Columns for param table
 	P_median = np.array([])
 	P_s_window = np.array([])
@@ -42,6 +70,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 	for k in range(len(filenames)):
 		start_time = timing.time()
 		filename = filenames[k]
+		TIC = int(filename.split('-')[-3])
 		file = path + filename
 
 		if makePlots:
@@ -53,13 +82,6 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		median = -1
 		s_window = -1
 		acf_1dt = -1
-		ls_per = -1
-		p_signal = -1
-		gp_log_s00 = -1
-		gp_log_omega00 = -1
-		gp_log_s01 = -1
-		gp_log_omega01 = -1
-		gp_log_q1 = -1
 		with fits.open(file, mode='readonly') as hdulist:
 			try:
 				tess_bjd = hdulist[1].data['TIME']
@@ -70,7 +92,6 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				P_median = np.append(P_median, median)
 				P_s_window = np.append(P_s_window, s_window)
 				P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
-				P_p_res = np.append(P_p_res, p_signal)
 				failed_files.append(filename)
 				np.savetxt(gp_data_file, ([]))
 				print('Reading file ' + filename + ' failed')
@@ -172,10 +193,10 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		FL = fh.FINDflare(y[mask_roll], yerr[mask_roll], avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
 		
 		if makePlots:
-			axes[3].plot(x[mask_roll], y[mask_roll])
+			axes[3].plot(x[mask_roll], y[mask_roll], zorder=1)
 			for j in range(len(FL[0])):
 				s1, s2 = FL[0][j], FL[1][j]+1
-				axes[3].scatter(x[mask_roll][s1:s2], y[mask_roll][s1:s2])
+				axes[3].scatter(x[mask_roll][s1:s2], y[mask_roll][s1:s2], zorder=2)
 
 		# Measure properties of detected flares
 		if makePlots:
@@ -191,13 +212,49 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			mask = (x > x1) & (x < x2)
 
 			popt1, pstd1, g_chisq, popt2, pstd2, f_chisq, skew, cover = \
-			    measureFlare(x, y, yerr, x1, x2)
+			    fitFlare(x, y, yerr, x1, x2)
 
 			mu, std, g_amp = popt1[0], popt1[1], popt1[2]
 			mu_err, std_err, g_amp_err = pstd1[0], pstd1[1], pstd1[2]
 			    
 			tpeak, fwhm, f_amp = popt2[0], popt2[1], popt2[2]
 			tpeak_err, fwhm_err, f_amp_err = pstd2[0], pstd2[1], pstd2[2]
+
+			f_fwhm_win = fwhm/(x2 - x1)
+			g_fwhm_win = std/(x2 - x1)
+
+			ed, ed_err = measureED(x, y, yerr, tpeak, fwhm)
+
+			FL_files = np.append(FL_files, filename)
+			FL_TICs = np.append(FL_TICs, TIC)
+			FL_t0 = np.append(FL_t0, x1)
+			FL_t1 = np.append(FL_t1, x2)
+			FL_f0 = np.append(FL_f0, np.nanmedian(tbl['PDCSAP_FLUX'][mask_roll][s1:s2]))
+			FL_f1 = np.append(FL_f1, np.nanmax(tbl['PDCSAP_FLUX'][mask_roll][s1:s2]))
+			FL_ed = np.append(FL_ed, ed)
+			FL_ed_err = np.append(FL_ed_err, ed_err)
+
+			FL_skew = np.append(FL_skew, skew)
+			FL_cover = np.append(FL_cover, cover)
+			FL_mu = np.append(FL_mu, mu)
+			FL_std = np.append(FL_std, std)
+			FL_g_amp = np.append(FL_g_amp, g_amp)
+			FL_mu_err = np.append(FL_mu_err, mu_err)
+			FL_std_err = np.append(FL_std_err, std_err)
+			FL_g_amp_err = np.append(FL_g_amp_err, g_amp_err)
+
+			FL_tpeak = np.append(FL_tpeak, tpeak)
+			FL_fwhm = np.append(FL_fwhm, fwhm)
+			FL_f_amp = np.append(FL_f_amp, f_amp)
+			FL_tpeak_err = np.append(FL_tpeak_err, tpeak_err)
+			FL_fwhm_err = np.append(FL_fwhm_err, fwhm_err)
+			FL_f_amp_err = np.append(FL_f_amp_err, f_amp_err)
+
+			FL_g_chisq = np.append(FL_g_chisq, g_chisq)
+			FL_f_chisq = np.append(FL_f_chisq, f_chisq)
+
+			FL_g_fwhm_win = np.append(FL_g_fwhm_win, g_fwhm_win)
+			FL_f_fwhm_win = np.append(FL_f_fwhm_win, f_fwhm_win)
 
 			if makePlots and j < 15:
 				row_idx = j//4
@@ -207,14 +264,14 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 
 				if popt1[0] > 0:
 					xmodel = np.linspace(x1, x2)
-					ymodel = fh.aflare1(xmodel, popt2[0], popt2[1], popt2[2])
+					ymodel = fh.aflare1(xmodel, tpeak, fwhm, f_amp)
 					axes_fl[row_idx][col_idx].plot(xmodel, ymodel, label=r'$\chi_{f}$ = ' + '{:.3f}'.format(f_chisq) \
-						                           + '\n FWHM/window = ' + '{:.2f}'.format(popt1[1]/(x2-x1)))
-					ymodel = fh.gaussian(xmodel, popt1[0], popt1[1], popt1[2])
+						                           + '\n FWHM/window = ' + '{:.2f}'.format(f_fwhm_win))
+					ymodel = fh.gaussian(xmodel, mu, std, g_amp)
 					axes_fl[row_idx][col_idx].plot(xmodel, ymodel, label=r'$\chi_{g}$ = ' + '{:.3f}'.format(g_chisq) \
-						                           + '\n FWHM/window = ' + '{:.2f}'.format(popt2[1]/(x2-x1)))
-					axes_fl[row_idx][col_idx].axvline(popt2[0] - popt2[1]/2, linestyle='--')
-					axes_fl[row_idx][col_idx].axvline(popt2[0] + popt2[1]/2, linestyle='--')
+						                           + '\n FWHM/window = ' + '{:.2f}'.format(g_fwhm_win))
+					axes_fl[row_idx][col_idx].axvline(tpeak - fwhm/2, linestyle='--')
+					axes_fl[row_idx][col_idx].axvline(tpeak + fwhm/2, linestyle='--')
 					axes_fl[row_idx][col_idx].legend()
 					axes_fl[row_idx][col_idx].set_title('Skew = ' + '{:.3f}'.format(skew))
 
@@ -240,26 +297,29 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				num_flares = len(FL[0])
 
 				f.write('{:^15}'.format(str(k+1) + '/' + str(len(filenames))) + \
-				        '{:<60}'.format(filename) + '{:<20}'.format(time_elapsed) + '{:<10}'.format(num_flares) + '\n')
+				        '{:<60}'.format(filename) + '{:<20}'.format(time_elapsed) + \
+				        '{:<10}'.format(num_flares) + '\n')
 
 		# Periodically write to the flare table file and param table file
 		l = k+1
 		ALL_TIC = pd.Series(filenames).str.split('-', expand=True).iloc[:,-3].astype('int')
 		ALL_FILES = pd.Series(filenames).str.split('/', expand=True).iloc[:,-1]
-		"""flare_out = pd.DataFrame(data={'file':FL_files,'TIC':FL_TICs,
-		                       't0':FL_t0, 't1':FL_t1,
-		                       'med':FL_f0, 'peak':FL_f1, 'smo_pk':FL_smo_pk, 'smo_sig':FL_smo_sig, 'ed':FL_ed,
-		                       'ed_err':FL_ed_err, 'skew':FL_skew, 'cover':FL_cover, 'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp,
-		                       'mu_err':FL_mu_err, 'std_err':FL_std_err, 'g_amp_err':FL_g_amp_err,
-		                       'tpeak':FL_tpeak, 'fwhm':FL_fwhm, 'f_amp':FL_f_amp,
-		                       'tpeak_err':FL_tpeak_err, 'fwhm_err':FL_fwhm_err,
-		                       'f_amp_err':FL_f_amp_err,'f_chisq':FL_f_chisq, 'g_chisq':FL_g_chisq})
-		flare_out.to_csv(sector+ '_flare_out.csv', index=False)"""
-		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], 's_window':P_s_window[:l], \
-			                           'acf_1dt':P_acf_1dt[:l]})
-		param_out.to_csv(prefix + '_param_out.csv', index=False)
 
-def measureFlare(x, y, yerr, tstart, tstop, skew_fac=10):
+		flare_out = pd.DataFrame(data={'file':FL_files,'TIC':FL_TICs, 't0':FL_t0, 't1':FL_t1, \
+			                           'med_flux':FL_f0, 'peak_flux':FL_f1, 'ed':FL_ed, \
+			                           'ed_err':FL_ed_err, 'skew':FL_skew, 'cover':FL_cover, \
+			                           'mu':FL_mu, 'std':FL_std, 'g_amp': FL_g_amp, 'mu_err':FL_mu_err, \
+			                           'std_err':FL_std_err, 'g_amp_err':FL_g_amp_err,'tpeak':FL_tpeak, \
+			                           'fwhm':FL_fwhm, 'f_amp':FL_f_amp, 'tpeak_err':FL_tpeak_err, \
+			                           'fwhm_err':FL_fwhm_err, 'f_amp_err':FL_f_amp_err,'f_chisq':FL_f_chisq, \
+			                           'g_chisq':FL_g_chisq, 'f_fwhm_win':FL_f_fwhm_win, 'g_fwhm_win':FL_g_fwhm_win})
+		flare_out.to_csv(path + prefix + '_flare_out.csv', index=False)
+
+		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], \
+			                           's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l]})
+		param_out.to_csv(path + prefix + '_param_out.csv', index=False)
+
+def fitFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	mask = (x > tstart) & (x < tstop)
 	mu0 = (tstart + tstop)/2
 	sig0 = (tstop - tstart)/2
@@ -300,6 +360,53 @@ def measureFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	coverage = n_pts/n_pts_true
 
 	return popt1, np.sqrt(pcov1.diagonal()), chi1, popt2, np.sqrt(pcov2.diagonal()), chi2, skew, coverage
+
+def measureED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
+    '''
+    Measure the equivalent duration of a flare in a smoothed light
+    curve. FINDflare typically doesnt identify the entire flare, so
+    integrate num_fwhm/2*fwhm away from the peak. As long as the light 
+    curve is flat away from the flare, the region around the flare should
+    not significantly contribute.
+
+    Parameters
+    ----------
+    x : numpy array
+        time values from the entire light curve
+    y : numpy array
+        flux values from the entire light curve
+    yerr : numpy array
+        error in the flux values
+    tpeak : float
+        Peak time of the flare detection
+    fwhm : float
+        Full-width half maximum of the flare
+    num_fwhm : float, optional
+        Size of the integration window in units of fwhm
+    Returns
+    -------
+        ED - Equivalent duration of the flare
+        ED_err - The uncertainty in the equivalent duration
+    '''
+
+    try:
+        width = fwhm*num_fwhm
+        istart = np.argwhere(x > tpeak - width/2)[0]
+        ipeak = np.argwhere(x > tpeak)[0]
+        istop = np.argwhere(x > tpeak + width/2)[0]
+    
+        dx = np.diff(x)
+        x = x[:-1]
+        y = y[:-1]
+        yerr = yerr[:-1]
+        mask = (x > x[istart]) & (x < x[istop])
+        ED = np.trapz(y[mask], x[mask])
+        ED_err = np.sqrt(np.sum((dx[mask]*yerr[mask])**2))
+
+    except IndexError:
+        return -1, -1
+    
+    return ED, ED_err
 
 def iterGP(x, y, yerr, period_guess, num_iter=20, ax=None):
     # Here is the kernel we will use for the GP regression
