@@ -97,17 +97,19 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				print('Reading file ' + filename + ' failed')
 				continue
 
-		# Cut out poor quality points and convert the remainder to a pandas df
+		if makePlots:
+			axes[0].plot(tess_bjd, pdcsap_flux)
+
+		# Cut out poor quality points
 		ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux))\
 		          & (~np.isnan(pdcsap_flux_error))
-		tbl = Table([tess_bjd[ok_cut], pdcsap_flux[ok_cut], pdcsap_flux_error[ok_cut]], 
+
+		tbl = Table([tess_bjd[ok_cut], pdcsap_flux[ok_cut], \
+			         pdcsap_flux_error[ok_cut]], 
 		             names=('TIME', 'PDCSAP_FLUX', 'PDCSAP_FLUX_ERR'))
 		df_tbl = tbl.to_pandas()
 
 		median = np.nanmedian(df_tbl['PDCSAP_FLUX'])
-
-		if makePlots:
-			axes[0].plot(tbl['TIME'], tbl['PDCSAP_FLUX'])
 
 		# Estimate the period of the LC with autocorrelation
 		acf = fh.autocorr_estimator(tbl['TIME'], tbl['PDCSAP_FLUX']/median, \
@@ -162,41 +164,18 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				print(filename + ' failed during GP fitting')
 				continue
 
-		# Before running the flare finder, exclude regions where there are large flux jumps
-		# These are detected by looking for regions where the rolling std of the GP gets
-		# large.
-
-		# There can be chunks missing from the lightcurve, so set window size by time, not
-		# number of points
-		df = pd.DataFrame({'smo':smo})
-		df.index = pd.to_datetime((tbl['TIME']*u.d).to(u.min).value, unit='m')
-		roll = df.rolling('15min').std()['smo'].values.reshape(1, -1)[0]
-		roll[~np.isfinite(roll)] = 0
-		max_window = int((1*u.d).to(u.min).value/2)
-		roll_max = pd.DataFrame(roll).rolling(max_window, center=True).max().values.reshape(1, -1)[0]
-		roll_max[~np.isfinite(roll_max)] = 0
-
-		roll_cut = 5000*np.nanstd(roll) #5
-
-		mask_roll = roll_max < roll_cut
-
-		if makePlots:
-			axes[2].scatter(tbl['TIME'], roll, s=1)
-			axes[2].scatter(tbl['TIME'], roll_max, s=1)
-			axes[2].axhline(roll_cut, color='r')
-
 		# Search for flares in the smoothed lightcurve
 		x = np.array(tbl['TIME'])
 		y = np.array(tbl['PDCSAP_FLUX']/median - smo)
 		yerr =  np.array(tbl['PDCSAP_FLUX_ERR']/median)
 
-		FL = fh.FINDflare(y[mask_roll], yerr[mask_roll], avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
+		FL = fh.FINDflare(y, yerr, avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
 		
 		if makePlots:
-			axes[3].plot(x[mask_roll], y[mask_roll], zorder=1)
+			axes[3].plot(x, y, zorder=1)
 			for j in range(len(FL[0])):
 				s1, s2 = FL[0][j], FL[1][j]+1
-				axes[3].scatter(x[mask_roll][s1:s2], y[mask_roll][s1:s2], zorder=2)
+				axes[3].scatter(x[s1:s2], y[s1:s2], zorder=2)
 
 		# Measure properties of detected flares
 		if makePlots:
@@ -204,8 +183,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 
 		for j in range(len(FL[0])):
 			s1, s2 = FL[0][j], FL[1][j]+1
-			tstart, tstop = x[mask_roll][s1], x[mask_roll][s2]
-			dx_fac  = 20
+			tstart, tstop = x[s1], x[s2]
+			dx_fac  = 10
 			dx = tstop - tstart
 			x1 = tstart - dx*dx_fac/2
 			x2 = tstop + dx*dx_fac/2
@@ -229,8 +208,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			FL_TICs = np.append(FL_TICs, TIC)
 			FL_t0 = np.append(FL_t0, x1)
 			FL_t1 = np.append(FL_t1, x2)
-			FL_f0 = np.append(FL_f0, np.nanmedian(tbl['PDCSAP_FLUX'][mask_roll][s1:s2]))
-			FL_f1 = np.append(FL_f1, np.nanmax(tbl['PDCSAP_FLUX'][mask_roll][s1:s2]))
+			FL_f0 = np.append(FL_f0, np.nanmedian(tbl['PDCSAP_FLUX'][s1:s2]))
+			FL_f1 = np.append(FL_f1, np.nanmax(tbl['PDCSAP_FLUX'][s1:s2]))
 			FL_ed = np.append(FL_ed, ed)
 			FL_ed_err = np.append(FL_ed_err, ed_err)
 
@@ -260,7 +239,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				row_idx = j//4
 				col_idx = j%4
 				axes_fl[row_idx][col_idx].errorbar(x[mask], y[mask], yerr=yerr[mask])
-				axes_fl[row_idx][col_idx].scatter(x[mask_roll][s1:s2], y[mask_roll][s1:s2])
+				axes_fl[row_idx][col_idx].scatter(x[s1:s2], y[s1:s2])
 
 				if popt1[0] > 0:
 					xmodel = np.linspace(x1, x2)

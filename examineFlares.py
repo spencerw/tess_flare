@@ -1,6 +1,7 @@
 import matplotlib.pylab as plt
 
 import os
+import glob
 import numpy as np
 import pandas as pd
 from astropy.io import fits
@@ -14,11 +15,15 @@ plots_path = path + 'plots_filt/'
 
 if not os.path.exists(plots_path):
 	os.makedirs(plots_path)
+else:
+	files = glob.glob(plots_path + '*')
+	for f in files:
+		os.remove(f)
 
 df = pd.read_csv(path + prefix + '_flare_out.csv')
 df_param = pd.read_csv(path + prefix + '_param_out.csv')
 mask = (df['skew'] > 0.5) & (df['f_chisq'] < 2) & (df['f_chisq'] > 0) & (df['f_fwhm_win'] < 0.1) & \
-       (df['tpeak'] > df['t0']) & (df['tpeak'] < df['t1'])
+       (df['tpeak'] > df['t0']) & (df['tpeak'] < df['t1']) & (df['cover'] > 0.9) & (df['f_chisq']/df['g_chisq'] < 0.7)
 print(len(df), len(df[mask]))
 
 df = df[mask]
@@ -39,15 +44,15 @@ for file in flare_files:
 		pdcsap_flux = hdulist[1].data['PDCSAP_FLUX']
 		pdcsap_flux_error = hdulist[1].data['PDCSAP_FLUX_ERR']
 
+	fig, axes = plt.subplots(figsize=(16,4))
+	axes.plot(tess_bjd, pdcsap_flux, zorder=1)
+
 	ok_cut = (quality == 0) & (~np.isnan(tess_bjd)) & (~np.isnan(pdcsap_flux)) \
 		          & (~np.isnan(pdcsap_flux_error))
 
 	time = tess_bjd[ok_cut]
 	flux = pdcsap_flux[ok_cut]
 	error = pdcsap_flux_error[ok_cut]
-
-	fig, axes = plt.subplots(figsize=(16,4))
-	axes.plot(time, flux, zorder=1)
 
 	for idx in range(len(flares)):
 		fl = flares.iloc[idx]
