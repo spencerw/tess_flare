@@ -269,6 +269,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			if len(FL[0] > 0):
 				fig_fl.suptitle(filename)
 				fig_fl.savefig(plots_path + filename + '_flares.png', format='png')
+             
+			plt.clf()
 
 		if writeLog:
 			with open(path + prefix + '.log', 'a') as f:
