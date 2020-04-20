@@ -1,4 +1,4 @@
-import matplotlib.pylab as plt
+#import matplotlib.pylab as plt
 
 import os
 import numpy as np
@@ -27,9 +27,14 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 	if not os.path.exists(gp_path):
 		os.makedirs(gp_path)
 
+	log_path = path + 'log/'
+
+	if not os.path.exists(log_path):
+		os.makedirs(log_path)
+
 	if writeLog:
-		if os.path.exists(path + prefix + '.log'):
-			os.remove(path + prefix + '.log')
+		if os.path.exists(log_path + prefix + '.log'):
+			os.remove(log_path + prefix + '.log')
 
 	# Columns for flare table
 	FL_files = np.array([])
@@ -273,7 +278,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			plt.clf()
 
 		if writeLog:
-			with open(path + prefix + '.log', 'a') as f:
+			with open(log_path + prefix + '.log', 'a') as f:
 				time_elapsed = timing.time() - start_time
 				num_flares = len(FL[0])
 
@@ -294,11 +299,11 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			                           'fwhm':FL_fwhm, 'f_amp':FL_f_amp, 'tpeak_err':FL_tpeak_err, \
 			                           'fwhm_err':FL_fwhm_err, 'f_amp_err':FL_f_amp_err,'f_chisq':FL_f_chisq, \
 			                           'g_chisq':FL_g_chisq, 'f_fwhm_win':FL_f_fwhm_win, 'g_fwhm_win':FL_g_fwhm_win})
-		flare_out.to_csv(path + prefix + '_flare_out.csv', index=False)
+		flare_out.to_csv(log_path + prefix + '_flare_out.csv', index=False)
 
 		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], \
 			                           's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l]})
-		param_out.to_csv(path + prefix + '_param_out.csv', index=False)
+		param_out.to_csv(log_path + prefix + '_param_out.csv', index=False)
 
 def fitFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	mask = (x > tstart) & (x < tstop)
