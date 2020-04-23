@@ -9,27 +9,24 @@ import astropy.units as u
 
 import flareHelpers as fh
 
-prefix = 'test'
-path = 'test_files/'
+prefix = '1to13'
+path = '/astro/store/gradscratch/tmp/scw7/tessData/lightcurves/sec1to13/'
 plots_path = path + 'plots_filt/'
+log_path = path + 'log/'
 
 if not os.path.exists(plots_path):
 	os.makedirs(plots_path)
-else:
-	files = glob.glob(plots_path + '*')
-	for f in files:
-		os.remove(f)
 
-df = pd.read_csv(path + prefix + '_flare_out.csv')
-df_param = pd.read_csv(path + prefix + '_param_out.csv')
-mask = (df['skew'] > 0.5) & (df['f_chisq'] < 2) & (df['f_chisq'] > 0) & (df['f_fwhm_win'] < 0.1) & \
-       (df['tpeak'] > df['t0']) & (df['tpeak'] < df['t1']) & (df['cover'] > 0.9) & (df['f_chisq']/df['g_chisq'] < 0.7)
-print(len(df), len(df[mask]))
-
-df = df[mask]
+df = pd.read_csv(log_path + prefix + '_flare_out.csv')
+df_param = pd.read_csv(log_path + prefix + '_param_out.csv')
+df = df[df['f_chisq'] > 0]
 flare_files = np.unique(df['file'])
 
+print(len(df), len(flare_files))
+
 for file in flare_files:
+	if os.path.exists(plots_path + file + '.png'):
+	    continue
 	flares = df[df['file'] == file]
 	par = df_param[df_param['file'] == file].iloc[0]
 	
@@ -90,3 +87,4 @@ for file in flare_files:
 		axes[row_idx][col_idx].set_title('Skew = ' + '{:.3f}'.format(fl['skew']))
 
 	fig.savefig(plots_path + file + '_flares.png', format='png')
+	plt.close('all')
