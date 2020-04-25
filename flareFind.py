@@ -194,9 +194,17 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			x1 = tstart - dx*dx_fac/2
 			x2 = tstop + dx*dx_fac/2
 			mask = (x > x1) & (x < x2)
+			
+			# Mask out other flare detections when fitting models
+			other_mask = np.ones(len(time), dtype=bool)
+			for i in range(len(FL[0])):
+			    s1other, s2other = FL[0][i], FL[1][i]+1
+			    if i == j:
+			        continue
+			    other_mask[s1other:s2other] = 0
 
 			popt1, pstd1, g_chisq, popt2, pstd2, f_chisq, skew, cover = \
-			    fitFlare(x, y, yerr, x1, x2)
+			    fitFlare(x[other_mask], y[other_mask], yerr[other_mask], x1, x2)
 
 			mu, std, g_amp = popt1[0], popt1[1], popt1[2]
 			mu_err, std_err, g_amp_err = pstd1[0], pstd1[1], pstd1[2]
