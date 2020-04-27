@@ -196,7 +196,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 			mask = (x > x1) & (x < x2)
 			
 			# Mask out other flare detections when fitting models
-			other_mask = np.ones(len(time), dtype=bool)
+			other_mask = np.ones(len(x), dtype=bool)
 			for i in range(len(FL[0])):
 			    s1other, s2other = FL[0][i], FL[1][i]+1
 			    if i == j:
