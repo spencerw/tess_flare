@@ -151,7 +151,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				else:
 					ax = None
 				smo, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
-				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, ax=ax)
+				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk, ax=ax)
 
 				gp_log_s00 = params[0]
 				gp_log_omega00 = params[1]
@@ -402,7 +402,7 @@ def measureED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     
     return ED, ED_err
 
-def iterGP(x, y, yerr, period_guess, num_iter=20, ax=None):
+def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None):
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
     # oscillators. One of the terms has Q fixed at 1/sqrt(2), which
@@ -465,7 +465,8 @@ def iterGP(x, y, yerr, period_guess, num_iter=20, ax=None):
         if ax:
         	ax.plot(x, mu)
 
-        m0 = y - mu < 0.8*sig
+        sig_fac = 0.035/acf_1pk
+        m0 = y - mu < sig_fac*sig
         m[m==1] = m0[m==1]
         n_pts = np.sum(m)
         print(n_pts, n_pts_prev)
