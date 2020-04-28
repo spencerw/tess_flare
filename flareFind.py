@@ -151,7 +151,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				else:
 					ax = None
 				smo, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
-				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk ax=ax)
+				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk, ax=ax)
 
 				gp_log_s00 = params[0]
 				gp_log_omega00 = params[1]

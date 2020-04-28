@@ -3,4 +3,4 @@ from flareFind import procFlares
 
 path = 'test/'
 filenames = np.genfromtxt(path + 'test_files.txt', comments='#', dtype='str')
-procFlares('test', filenames, path, makePlots=True, clobberGP=False)
+procFlares('test', filenames, path, makePlots=False, clobberGP=True)
