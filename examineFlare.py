@@ -45,7 +45,7 @@ def examineFlare(file, t0_list=[]):
     flux = pdcsap_flux[ok_cut]
     error = pdcsap_flux_error[ok_cut]
 
-    time_smo, smo = np.loadtxt(path + 'gp/' + file + '.gp')
+    time_smo, smo, var = np.loadtxt(path + 'gp/' + file + '.gp')
     smo_int = np.interp(time, time_smo, smo)
 
     for idx in range(len(flares)):
