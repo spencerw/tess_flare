@@ -1,4 +1,4 @@
-#import matplotlib.pylab as plt
+import matplotlib.pylab as plt
 
 import os
 import numpy as np
@@ -142,7 +142,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				continue
 
 			print('GP file already exists, loading...')
-			time, smo = np.loadtxt(gp_data_file)
+			times, smo, var = np.loadtxt(gp_data_file)
 		else:
 			smo = np.zeros(len(df_tbl['TIME']))
 			try:
@@ -150,8 +150,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 					ax = axes[1]
 				else:
 					ax = None
-				smo, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
-				                     df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk, ax=ax)
+				times, smo, var, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
+				                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk, ax=ax)
 
 				gp_log_s00 = params[0]
 				gp_log_omega00 = params[1]
@@ -160,7 +160,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				gp_log_q1 = params[4]
 
 				np.savetxt(gp_param_file, params)
-				np.savetxt(gp_data_file, (df_tbl['TIME'], smo))
+				np.savetxt(gp_data_file, (times, smo, var))
 
 			except:
 				traceback.print_exc()
@@ -169,9 +169,14 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				print(filename + ' failed during GP fitting')
 				continue
 
+		# The GP is produced from a downsampled lightcurve. Need to interpolate to
+		# compare GP and full LC
+
+		smo_int = np.interp(tbl['TIME'], times, smo)
+
 		# Search for flares in the smoothed lightcurve
 		x = np.array(tbl['TIME'])
-		y = np.array(tbl['PDCSAP_FLUX']/median - smo)
+		y = np.array(tbl['PDCSAP_FLUX']/median - smo_int)
 		yerr =  np.array(tbl['PDCSAP_FLUX_ERR']/median)
 
 		FL = fh.FINDflare(y, yerr, avg_std=True, std_window=s_window, N1=3, N2=1, N3=3)
@@ -402,17 +407,25 @@ def measureED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     
     return ED, ED_err
 
-def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None):
+def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=2000):
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
     # oscillators. One of the terms has Q fixed at 1/sqrt(2), which
     # forces it to be non-periodic. There is also a white noise term
     # included.
+
+    # Randomly select n points from the light curve for the GP fit
+    x_ind_rand = np.random.choice(len(x), n_samp, replace=False)
+    x_ind = x_ind_rand[np.argsort(x[x_ind_rand])]
+
+    x_gp = x[x_ind]
+    y_gp = y[x_ind]
+    yerr_gp = yerr[x_ind]
     
     # A non-periodic component
     Q = 1.0 / np.sqrt(2.0)
     w0 = 3.0
-    S0 = np.var(y) / (w0 * Q)
+    S0 = np.var(y_gp) / (w0 * Q)
     bounds = dict(log_S0=(-20, 15), log_Q=(-15, 15), log_omega0=(-15, 15))
     kernel = terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                            bounds=bounds)
@@ -421,28 +434,28 @@ def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None):
     # A periodic component
     Q = 1.0
     w0 = 2*np.pi/period_guess
-    S0 = np.var(y) / (w0 * Q)
+    S0 = np.var(y_gp) / (w0 * Q)
     kernel += terms.SHOTerm(log_S0=np.log(S0), log_Q=np.log(Q), log_omega0=np.log(w0),
                             bounds=bounds)
 
     # Now calculate the covariance matrix using the initial
     # kernel parameters
-    gp = celerite.GP(kernel, mean=np.mean(y))
-    gp.compute(x, yerr)
+    gp = celerite.GP(kernel, mean=np.mean(y_gp))
+    gp.compute(x_gp, yerr_gp)
 
     def neg_log_like(params, y, gp, m):
         gp.set_parameter_vector(params)
-        return -gp.log_likelihood(y[m])
+        return -gp.log_likelihood(y_gp[m])
 
     def grad_neg_log_like(params, y, gp,m ):
         gp.set_parameter_vector(params)
-        return -gp.grad_log_likelihood(y[m])[1]
+        return -gp.grad_log_likelihood(y_gp[m])[1]
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
     
     if ax:
-    	ax.plot(x, y)
+    	ax.plot(x_gp, y_gp)
 
     # Find the best fit kernel parameters. We want to try to ignore the flares
     # when we do the fit. To do this, we will repeatedly find the best fit
@@ -450,33 +463,31 @@ def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None):
     # the flux and then mask out points based on how far they deviate from
     # the model. After a few passes, this should cause the model to fit mostly
     # to periodic features.
-    m = np.ones(len(x), dtype=bool)
+    m = np.ones(len(x_gp), dtype=bool)
     for i in range(num_iter):
         n_pts_prev = np.sum(m)
-        gp.compute(x[m], yerr[m])
+        gp.compute(x_gp[m], yerr_gp[m])
         soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
-                        method='L-BFGS-B', bounds=bounds, args=(y, gp, m))
+                        method='L-BFGS-B', bounds=bounds, args=(y_gp, gp, m))
         gp.set_parameter_vector(soln.x)
         initial_params = soln.x
-        mu = gp.predict(y[m], x, return_cov=False, return_var=False)
-        var = np.nanvar(y - mu)
-        sig = np.sqrt(var)
+        mu, var = gp.predict(y_gp[m], x_gp, return_var=True)
+        sig = np.sqrt(var + yerr_gp**2)
 
         if ax:
-        	ax.plot(x, mu)
+        	ax.plot(x_gp, mu)
 
-        sig_fac = 0.035/acf_1pk
-        m0 = y - mu < sig_fac*sig
+        m0 = y_gp - mu < sig
         m[m==1] = m0[m==1]
         n_pts = np.sum(m)
         print(n_pts, n_pts_prev)
-        if n_pts <= 1000:
+        if n_pts <= 10:
             raise ValueError('GP iteration threw out too many points')
             break
         if (n_pts == n_pts_prev):
             break
 
-    gp.compute(x[m], yerr[m])
-    mu = gp.predict(y[m], x, return_cov=False, return_var=False)
+    gp.compute(x_gp[m], yerr_gp[m])
+    mu, var = gp.predict(y_gp[m], x_gp, return_var=True)
     
-    return mu, gp.get_parameter_vector()
+    return x_gp, mu, var, gp.get_parameter_vector()

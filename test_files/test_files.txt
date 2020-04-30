@@ -22,4 +22,7 @@ tess2018206045859-s0001-0000000032150630-0120-s_lc.fits
 tess2018206045859-s0001-0000000053842685-0120-s_lc.fits
 # Junk LC, no transits
 
+tess2018349182459-s0006-0000000219423316-0126-s_lc.fits
+# Flare on variable star, GP was ingesting tail of flare
+
 # Still looking for: complex flare, 2 close together flux jumps
