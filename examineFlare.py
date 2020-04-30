@@ -26,7 +26,6 @@ def examineFlare(file, t0_list=[]):
     par = df_param[df_param['file'] == file].iloc[0]
 
     median = par['med']
-    time_smo, smo = np.loadtxt(path + 'gp/' + file + '.gp')
 
     # First plot the LC with the CPA points overlaid
 
@@ -45,6 +44,9 @@ def examineFlare(file, t0_list=[]):
     time = tess_bjd[ok_cut]
     flux = pdcsap_flux[ok_cut]
     error = pdcsap_flux_error[ok_cut]
+
+    time_smo, smo, var = np.loadtxt(path + 'gp/' + file + '.gp')
+    smo_int = np.interp(time, time_smo, smo)
 
     for idx in range(len(flares)):
         fl = flares.iloc[idx]
@@ -69,7 +71,7 @@ def examineFlare(file, t0_list=[]):
 
         t0, t1 = fl['t0'], fl['t1']
         mask = (time >= t0) & (time < t1)
-        axes[row_idx][col_idx].errorbar(time[mask], flux[mask]/median - smo[mask], error[mask]/median)
+        axes[row_idx][col_idx].errorbar(time[mask], flux[mask]/median - smo_int[mask], error[mask]/median)
 
         xmodel = np.linspace(t0, t1)
         ymodel = fh.aflare1(xmodel, fl['tpeak'], fl['fwhm'], fl['f_amp'])
