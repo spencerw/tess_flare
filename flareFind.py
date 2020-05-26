@@ -1,4 +1,4 @@
-import matplotlib.pylab as plt
+#import matplotlib.pylab as plt
 
 import os
 import numpy as np
@@ -29,8 +29,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 
 	log_path = path + 'log/'
 
-	if not os.path.exists(log_path):
-		os.makedirs(log_path)
+	#if not os.path.exists(log_path):
+	#	os.makedirs(log_path)
 
 	if writeLog:
 		if os.path.exists(log_path + prefix + '.log'):
@@ -407,12 +407,23 @@ def measureED(x, y, yerr, tpeak, fwhm, num_fwhm=10):
     
     return ED, ED_err
 
-def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=2000):
+def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=4000):
     # Here is the kernel we will use for the GP regression
     # It consists of a sum of two stochastically driven damped harmonic
     # oscillators. One of the terms has Q fixed at 1/sqrt(2), which
     # forces it to be non-periodic. There is also a white noise term
     # included.
+
+    # Do some aggressive sigma clipping
+    m = np.ones(len(x), dtype=bool)
+    while True:
+        mu = np.mean(y[m])
+        sig = np.std(y[m])
+        m0 = y - mu < 3 * sig
+        if np.all(m0 == m):
+            break
+        m = m0
+    x, y, yerr = x[m], y[m], yerr[m]
 
     # Randomly select n points from the light curve for the GP fit
     x_ind_rand = np.random.choice(len(x), n_samp, replace=False)
