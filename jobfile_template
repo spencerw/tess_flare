@@ -2,7 +2,7 @@
 #SBATCH -J tess^i^
 #SBATCH -n 28
 #SBATCH -N 1
-#SBATCH -t 06:00:00
+#SBATCH -t 30:00:00
 #SBATCH --mem=10G
 #SBATCH --mail-user=scw7@washington.edu
 #SBATCH --mail-type=ALL

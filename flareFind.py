@@ -150,8 +150,8 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 					ax = axes[1]
 				else:
 					ax = None
-				times, smo, var, params = iterGP(df_tbl['TIME'], df_tbl['PDCSAP_FLUX']/median, \
-				                          df_tbl['PDCSAP_FLUX_ERR']/median, acf_1dt, acf_1pk, ax=ax)
+				times, smo, var, params = iterGP(df_tbl['TIME'].values, df_tbl['PDCSAP_FLUX'].values/median, \
+				                          df_tbl['PDCSAP_FLUX_ERR'].values/median, acf_1dt, acf_1pk, ax=ax)
 
 				gp_log_s00 = params[0]
 				gp_log_omega00 = params[1]
@@ -423,15 +423,18 @@ def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=4000)
         if np.all(m0 == m):
             break
         m = m0
-    x, y, yerr = x[m], y[m], yerr[m]
+    x_clip, y_clip, yerr_clip = x[m], y[m], yerr[m]
+
+    if len(x_clip) < n_samp:
+        n_samp = len(x_clip)
 
     # Randomly select n points from the light curve for the GP fit
-    x_ind_rand = np.random.choice(len(x), n_samp, replace=False)
-    x_ind = x_ind_rand[np.argsort(x[x_ind_rand])]
+    x_ind_rand = np.random.choice(len(x_clip), n_samp, replace=False)
+    x_ind = x_ind_rand[np.argsort(x_clip[x_ind_rand])]
 
-    x_gp = x[x_ind]
-    y_gp = y[x_ind]
-    yerr_gp = yerr[x_ind]
+    x_gp = x_clip[x_ind]
+    y_gp = y_clip[x_ind]
+    yerr_gp = yerr_clip[x_ind]
     
     # A non-periodic component
     Q = 1.0 / np.sqrt(2.0)
@@ -456,11 +459,11 @@ def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=4000)
 
     def neg_log_like(params, y, gp, m):
         gp.set_parameter_vector(params)
-        return -gp.log_likelihood(y_gp[m])
+        return -gp.log_likelihood(y[m])
 
     def grad_neg_log_like(params, y, gp,m ):
         gp.set_parameter_vector(params)
-        return -gp.grad_log_likelihood(y_gp[m])[1]
+        return -gp.grad_log_likelihood(y[m])[1]
 
     bounds = gp.get_parameter_bounds()
     initial_params = gp.get_parameter_vector()
