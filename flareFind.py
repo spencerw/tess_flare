@@ -322,7 +322,7 @@ def fitFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	mask = (x > tstart) & (x < tstop)
 	mu0 = (tstart + tstop)/2
 	sig0 = (tstop - tstart)/2
-	A0 = 1
+	A0 = np.max(y)*100
 	skew = 0
 
 	try:
