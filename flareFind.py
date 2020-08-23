@@ -1,5 +1,3 @@
-#import matplotlib.pylab as plt
-
 import os
 import numpy as np
 import pandas as pd
@@ -156,19 +154,10 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 					ax = None
 				times, smo, var, params = iterGP_rotation(df_tbl['TIME'].values, df_tbl['PDCSAP_FLUX'].values/median, \
 				                          df_tbl['PDCSAP_FLUX_ERR'].values/median, acf_1dt, acf_1pk, ax=ax)
-                
-                gp_log_s2 = params['logs2']
-                gp_log_amp = params['logamp']
-                gp_log_period = params['logperiod']
-                gp_log_q0 = params['logq0']
-                gp_log_delta_q = params['logdeltaq']
-                gp_mix = params['mix']
-                gp_period = params['period']
 
-                param_list = [gp_log_s2, gp_log_amp, gp_log_period, gp_log_q0, gp_log_delta_q,\
-                             gp_mix, gp_period]
 
-				np.savetxt(gp_param_file, param_list)
+				np.savetxt(gp_param_file, params['logs2'], params['logamp'], params['logperiod'], \
+                                           params['logq0'], params['logdeltaq'], params['mix'], params['period'])
 				np.savetxt(gp_data_file, (times, smo, var))
 
 			except:
@@ -554,60 +543,60 @@ def iterGP_rotation(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_s
     # the flux and then mask out points based on how far they deviate from
     # the model. After a few passes, this should cause the model to fit mostly
     # to periodic features.
-    m = np.ones(len(x_gp), dtype=bool)
-    for i in range(num_iter):
-        n_pts_prev = np.sum(m)
-        mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m)
-        mu += 1
-        sig = np.sqrt(var + yerr_gp**2)
+    with pm.Model() as model:
+        m = np.ones(len(x_gp), dtype=bool)
+        for i in range(num_iter):
+            n_pts_prev = np.sum(m)
+            mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m, acf_1pk, model)
+            mu += 1
+            sig = np.sqrt(var + yerr_gp**2)
 
-        if ax:
-        	ax.plot(x_gp, mu)
+            if ax:
+                ax.plot(x_gp, mu)
 
-        m0 = y_gp - mu < sig
-        m[m==1] = m0[m==1]
-        n_pts = np.sum(m)
-        print(n_pts, n_pts_prev)
-        if n_pts <= 10:
-            raise ValueError('GP iteration threw out too many points')
-            break
-        if (n_pts_prev - n_pts) <= 3:
-            print('Done')
-            break
+            m0 = y_gp - mu < sig
+            m[m==1] = m0[m==1]
+            n_pts = np.sum(m)
+            print(n_pts, n_pts_prev)
+            if n_pts <= 10:
+                raise ValueError('GP iteration threw out too many points')
+                break
+            if (n_pts_prev - n_pts) <= 3:
+                print('Done')
+                break
 
-    mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m)
+        mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m, acf_1pk, model)
     
     return x_gp, mu, var, map_soln
 
-def predict(x, y, yerr, m):
-    with pm.Model() as model:
-        # The parameters of the RotationTerm kernel
-        logamp = pm.Normal("logamp", mu=np.log(np.var(y[m])), sd=5.0)
-        logperiod = pm.Normal("logperiod", mu=np.log(period_guess), sd=5.0)
-        logQ0 = pm.Normal("logQ0", mu=1.0, sd=10.0)
-        logdeltaQ = pm.Normal("logdeltaQ", mu=2.0, sd=10.0)
-        mix = pm.Uniform("mix", lower=0.0, upper=1.0)
+def predict(x, y, yerr, m, period_guess, model):
+    # The parameters of the RotationTerm kernel
+    logamp = pm.Normal("logamp", mu=np.log(np.var(y[m])), sd=5.0)
+    logperiod = pm.Normal("logperiod", mu=np.log(period_guess), sd=5.0)
+    logQ0 = pm.Normal("logQ0", mu=1.0, sd=10.0)
+    logdeltaQ = pm.Normal("logdeltaQ", mu=2.0, sd=10.0)
+    mix = pm.Uniform("mix", lower=0.0, upper=1.0)
 
-         # Track the period as a deterministic
-        period = pm.Deterministic("period", tt.exp(logperiod))
+     # Track the period as a deterministic
+    period = pm.Deterministic("period", tt.exp(logperiod))
 
-        # Set up the Gaussian Process model
-        kernel = xo.gp.terms.RotationTerm(
-            log_amp=logamp,
-            period=period,
-            log_Q0=logQ0,
-            log_deltaQ=logdeltaQ,
-            mix=mix
-        )
-        gp = xo.gp.GP(kernel, x[m], yerr[m]**2, J=4)
+    # Set up the Gaussian Process model
+    kernel = xo.gp.terms.RotationTerm(
+        log_amp=logamp,
+        period=period,
+        log_Q0=logQ0,
+        log_deltaQ=logdeltaQ,
+        mix=mix
+    )
+    gp = xo.gp.GP(kernel, x[m], yerr[m]**2, J=4)
 
-        # Compute the Gaussian Process likelihood and add it into the
-        # the PyMC3 model as a "potential"
-        pm.Potential("loglike", gp.log_likelihood(y[m] - 1))
+    # Compute the Gaussian Process likelihood and add it into the
+    # the PyMC3 model as a "potential"
+    pm.Potential("loglike", gp.log_likelihood(y[m] - 1))
 
-        # Optimize to find the maximum a posteriori parameters
-        map_soln = xo.optimize(start=model.test_point, verbose=False)
+    # Optimize to find the maximum a posteriori parameters
+    map_soln = xo.optimize(start=model.test_point, verbose=False)
 
-        mu, var = xo.utils.eval_in_model(gp.predict(x, return_var=True), map_soln)
+    mu, var = xo.utils.eval_in_model(gp.predict(x, return_var=True), map_soln)
         
     return mu, var, map_soln
