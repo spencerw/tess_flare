@@ -1,5 +1,7 @@
+#import matplotlib.pylab as plt
+
 import os
-import numpy as np
+import autograd.numpy as np
 import pandas as pd
 from astropy.io import fits
 from astropy.table import Table
@@ -8,10 +10,6 @@ from celerite import terms
 from scipy.optimize import minimize, curve_fit
 import astropy.units as u
 import time as timing
-
-import exoplanet as xo
-import pymc3 as pm
-import theano.tensor as tt
 
 import flareHelpers as fh
 
@@ -26,13 +24,13 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 
 	gp_path = path + 'gp/'
 
-	if not os.path.exists(gp_path):
-		os.makedirs(gp_path)
+	#if not os.path.exists(gp_path):
+		#os.makedirs(gp_path)
 
 	log_path = path + 'log/'
 
 	#if not os.path.exists(log_path):
-	#	os.makedirs(log_path)
+		#os.makedirs(log_path)
 
 	if writeLog:
 		if os.path.exists(log_path + prefix + '.log'):
@@ -156,8 +154,9 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				                          df_tbl['PDCSAP_FLUX_ERR'].values/median, acf_1dt, acf_1pk, ax=ax)
 
 
-				np.savetxt(gp_param_file, params['logs2'], params['logamp'], params['logperiod'], \
-                                           params['logq0'], params['logdeltaq'], params['mix'], params['period'])
+				#np.savetxt(gp_param_file, params['logs2'], params['logamp'], params['logperiod'], \
+                                #           params['logq0'], params['logdeltaq'], params['mix'], params['period'])
+				np.savetxt(gp_param_file, params)
 				np.savetxt(gp_data_file, (times, smo, var))
 
 			except:
@@ -315,6 +314,9 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], \
 			                           's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l]})
 		param_out.to_csv(log_path + prefix + '_param_out.csv', index=False)
+
+	for k in range(len(failed_files)):
+		print(failed_files[k])
 
 def fitFlare(x, y, yerr, tstart, tstop, skew_fac=10):
 	mask = (x > tstart) & (x < tstop)
@@ -506,97 +508,112 @@ def iterGP(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=4000)
 
 # Same as iterGP, but uses the RotationTerm kernel from the exoplanet package
 def iterGP_rotation(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_samp=4000):
-    # Here is the kernel we will use for the GP regression
-    # It consists of a sum of two stochastically driven damped harmonic
-    # oscillators. One of the terms has Q fixed at 1/sqrt(2), which
-    # forces it to be non-periodic. There is also a white noise term
-    # included.
+	# Here is the kernel we will use for the GP regression
+	# It consists of a sum of two stochastically driven damped harmonic
+	# oscillators. One of the terms has Q fixed at 1/sqrt(2), which
+	# forces it to be non-periodic. There is also a white noise term
+	# included.
+	# Do some aggressive sigma clipping
+	m = np.ones(len(x), dtype=bool)
+	while True:
+		mu = np.mean(y[m])
+		sig = np.std(y[m])
+		m0 = y - mu < 3 * sig
+		if np.all(m0 == m):
+			break
+		m = m0
+	x_clip, y_clip, yerr_clip = x[m], y[m], yerr[m]
 
-    # Do some aggressive sigma clipping
-    m = np.ones(len(x), dtype=bool)
-    while True:
-        mu = np.mean(y[m])
-        sig = np.std(y[m])
-        m0 = y - mu < 3 * sig
-        if np.all(m0 == m):
-            break
-        m = m0
-    x_clip, y_clip, yerr_clip = x[m], y[m], yerr[m]
+	if len(x_clip) < n_samp:
+		n_samp = len(x_clip)
 
-    if len(x_clip) < n_samp:
-        n_samp = len(x_clip)
+	# Randomly select n points from the light curve for the GP fit
+	x_ind_rand = np.random.choice(len(x_clip), n_samp, replace=False)
+	x_ind = x_ind_rand[np.argsort(x_clip[x_ind_rand])]
 
-    # Randomly select n points from the light curve for the GP fit
-    x_ind_rand = np.random.choice(len(x_clip), n_samp, replace=False)
-    x_ind = x_ind_rand[np.argsort(x_clip[x_ind_rand])]
+	x_gp = x_clip[x_ind]
+	y_gp = y_clip[x_ind]
+	yerr_gp = yerr_clip[x_ind]
 
-    x_gp = x_clip[x_ind]
-    y_gp = y_clip[x_ind]
-    yerr_gp = yerr_clip[x_ind]
-    
-    if ax:
-    	ax.plot(x_gp, y_gp)
+	gp = fh.get_rotation_gp(x_gp, y_gp, yerr_gp, period_guess, 0, 13)
+	# Now calculate the covariance matrix using the initial
+	# kernel parameters
+	gp.compute(x, yerr)
 
-    # Find the best fit kernel parameters. We want to try to ignore the flares
-    # when we do the fit. To do this, we will repeatedly find the best fit
-    # solution to the kernel model, calculate the covariance matrix, predict
-    # the flux and then mask out points based on how far they deviate from
-    # the model. After a few passes, this should cause the model to fit mostly
-    # to periodic features.
-    with pm.Model() as model:
-        m = np.ones(len(x_gp), dtype=bool)
-        for i in range(num_iter):
-            n_pts_prev = np.sum(m)
-            mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m, acf_1pk, model)
-            mu += 1
-            sig = np.sqrt(var + yerr_gp**2)
+	def neg_log_like(params, y, gp, m):
+		gp.set_parameter_vector(params)
+		return -gp.log_likelihood(y[m])
 
-            if ax:
-                ax.plot(x_gp, mu)
+	def grad_neg_log_like(params, y, gp,m ):
+		gp.set_parameter_vector(params)
+		return -gp.grad_log_likelihood(y[m])[1]
 
-            m0 = y_gp - mu < sig
-            m[m==1] = m0[m==1]
-            n_pts = np.sum(m)
-            print(n_pts, n_pts_prev)
-            if n_pts <= 10:
-                raise ValueError('GP iteration threw out too many points')
-                break
-            if (n_pts_prev - n_pts) <= 3:
-                print('Done')
-                break
+	bounds = gp.get_parameter_bounds()
+	initial_params = gp.get_parameter_vector()
 
-        mu, var, map_soln = predict(x_gp, y_gp, yerr_gp, m, acf_1pk, model)
-    
-    return x_gp, mu, var, map_soln
+	if ax:
+		ax.plot(x_gp, y_gp)
 
-def predict(x, y, yerr, m, period_guess, model):
-    # The parameters of the RotationTerm kernel
-    logamp = pm.Normal("logamp", mu=np.log(np.var(y[m])), sd=5.0)
-    logperiod = pm.Normal("logperiod", mu=np.log(period_guess), sd=5.0)
-    logQ0 = pm.Normal("logQ0", mu=1.0, sd=10.0)
-    logdeltaQ = pm.Normal("logdeltaQ", mu=2.0, sd=10.0)
-    mix = pm.Uniform("mix", lower=0.0, upper=1.0)
+	# Find the best fit kernel parameters. We want to try to ignore the flares
+	# when we do the fit. To do this, we will repeatedly find the best fit
+	# solution to the kernel model, calculate the covariance matrix, predict
+	# the flux and then mask out points based on how far they deviate from
+	# the model. After a few passes, this should cause the model to fit mostly
+	# to periodic features.
+	m = np.ones(len(x_gp), dtype=bool)
+	for i in range(num_iter):
+		n_pts_prev = np.sum(m)
+		gp.compute(x_gp[m], yerr_gp[m])
+		soln = minimize(neg_log_like, initial_params, jac=grad_neg_log_like,
+		           method='L-BFGS-B', bounds=bounds, args=(y_gp, gp, m))
+		gp.set_parameter_vector(soln.x)
+		initial_params = soln.x
+		mu, var = gp.predict(y_gp[m], x_gp, return_var=True)
+		sig = np.sqrt(var + yerr_gp**2)
 
-     # Track the period as a deterministic
-    period = pm.Deterministic("period", tt.exp(logperiod))
+		m0 = y_gp - mu < sig
+		m[m==1] = m0[m==1]
+		n_pts = np.sum(m)
+		if n_pts <= 10:
+			raise ValueError('GP iteration threw out too many points')
+			break
+		if (n_pts_prev - n_pts) <= 3:
+			break
 
-    # Set up the Gaussian Process model
-    kernel = xo.gp.terms.RotationTerm(
-        log_amp=logamp,
-        period=period,
-        log_Q0=logQ0,
-        log_deltaQ=logdeltaQ,
-        mix=mix
-    )
-    gp = xo.gp.GP(kernel, x[m], yerr[m]**2, J=4)
+	gp.compute(x_gp[m], yerr_gp[m])
+	mu, var = gp.predict(y_gp[m], x_gp, return_var=True)
 
-    # Compute the Gaussian Process likelihood and add it into the
-    # the PyMC3 model as a "potential"
-    pm.Potential("loglike", gp.log_likelihood(y[m] - 1))
+	return x_gp, mu, var, gp.get_parameter_vector()
 
-    # Optimize to find the maximum a posteriori parameters
-    map_soln = xo.optimize(start=model.test_point, verbose=False)
+def predict(x, y, yerr, m, period_guess):
+	with pm.Model() as model:
+		# The parameters of the RotationTerm kernel
+		logamp = pm.Normal("logamp", mu=np.log(np.var(y[m])), sd=5.0)
+		logperiod = pm.Normal("logperiod", mu=np.log(period_guess), sd=5.0)
+		logQ0 = pm.Normal("logQ0", mu=1.0, sd=10.0)
+		logdeltaQ = pm.Normal("logdeltaQ", mu=2.0, sd=10.0)
+		mix = pm.Uniform("mix", lower=0.0, upper=1.0)
 
-    mu, var = xo.utils.eval_in_model(gp.predict(x, return_var=True), map_soln)
-        
-    return mu, var, map_soln
+		 # Track the period as a deterministic
+		period = pm.Deterministic("period", tt.exp(logperiod))
+
+		# Set up the Gaussian Process model
+		kernel = xo.gp.terms.RotationTerm(
+		    log_amp=logamp,
+		    period=period,
+		    log_Q0=logQ0,
+		    log_deltaQ=logdeltaQ,
+		    mix=mix
+		)
+		gp = xo.gp.GP(kernel, x[m], yerr[m]**2, J=4)
+
+		# Compute the Gaussian Process likelihood and add it into the
+		# the PyMC3 model as a "potential"
+		pm.Potential("loglike", gp.log_likelihood(y[m] - 1))
+
+		# Optimize to find the maximum a posteriori parameters
+		map_soln = xo.optimize(start=model.test_point, progress_bar=False)
+
+		mu, var = xo.utils.eval_in_model(gp.predict(x, return_var=True), map_soln)
+
+	return mu, var, map_soln

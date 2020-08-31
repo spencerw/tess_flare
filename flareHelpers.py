@@ -1,5 +1,7 @@
-import numpy as np
+import autograd.numpy as np
 import pandas as pd
+import celerite
+from celerite import terms
 from scipy.ndimage import gaussian_filter
 
 def gaussian(x, mu, sigma, A):
@@ -285,3 +287,80 @@ def aflare1(t, tpeak, fwhm, ampl, upsample=False, uptime=10):
                                 ) * np.abs(ampl) # amplitude
 
     return flare
+
+class MixtureOfSHOsTerm(terms.SHOTerm):
+    parameter_names = ("log_a", "log_Q1", "mix_par", "log_Q2", "log_P")
+
+    def get_real_coefficients(self, params):
+        return np.empty(0), np.empty(0)
+
+    def get_complex_coefficients(self, params):
+        log_a, log_Q1, mix_par, log_Q2, log_period = params
+
+        Q = np.exp(log_Q2) + np.exp(log_Q1)
+        log_Q1 = np.log(Q)
+        P = np.exp(log_period)
+        log_omega1 = np.log(4*np.pi*Q) - np.log(P) - 0.5*np.log(4.0*Q*Q-1.0)
+        log_S1 = log_a - log_omega1 - log_Q1
+
+        mix = -np.log(1.0 + np.exp(-mix_par))
+        Q = np.exp(log_Q2)
+        P = 0.5*np.exp(log_period)
+        log_omega2 = np.log(4*np.pi*Q) - np.log(P) - 0.5*np.log(4.0*Q*Q-1.0)
+        log_S2 = mix + log_a - log_omega2 - log_Q2
+
+        c1 = super(MixtureOfSHOsTerm, self).get_complex_coefficients([
+            log_S1, log_Q1, log_omega1,
+        ])
+
+        c2 = super(MixtureOfSHOsTerm, self).get_complex_coefficients([
+            log_S2, log_Q2, log_omega2,
+        ])
+
+        return [np.array([a, b]) for a, b in zip(c1, c2)]
+
+    def log_prior(self):
+        lp = super(MixtureOfSHOsTerm, self).log_prior()
+        if not np.isfinite(lp):
+            return -np.inf
+        mix = 1.0 / (1.0 + np.exp(-self.mix_par))
+        return lp + np.log(mix) + np.log(1.0 - mix)
+
+def get_basic_kernel(t, y, yerr):
+    kernel = terms.SHOTerm(
+        log_S0=np.log(np.var(y)),
+        log_Q=-np.log(4.0),
+        log_omega0=np.log(2*np.pi/10.),
+        bounds=dict(
+            log_S0=(-20.0, 10.0),
+            log_omega0=(np.log(2*np.pi/80.0), np.log(2*np.pi/2.0)),
+        ),
+    )
+    kernel.freeze_parameter('log_Q')
+
+    # Finally some jitter
+    kernel += terms.JitterTerm(log_sigma=np.log(np.median(yerr)),
+                               bounds=[(-20.0, 5.0)])
+
+    return kernel
+
+def get_rotation_gp(t, y, yerr, period, min_period, max_period):
+    kernel = get_basic_kernel(t, y, yerr)
+    kernel += MixtureOfSHOsTerm(
+        log_a=np.log(np.var(y)),
+        log_Q1=np.log(15),
+        mix_par=-1.0,
+        log_Q2=np.log(15),
+        log_P=np.log(period),
+        bounds=dict(
+            log_a=(-20.0, 10.0),
+            log_Q1=(-0.5*np.log(2.0), 11.0),
+            mix_par=(-5.0, 5.0),
+            log_Q2=(-0.5*np.log(2.0), 11.0),
+            log_P=(np.log(min_period), np.log(max_period)),
+        )
+    )
+
+    gp = celerite.GP(kernel=kernel, mean=0.)
+    gp.compute(t)
+    return gp
