@@ -69,6 +69,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 	P_median = np.array([])
 	P_s_window = np.array([])
 	P_acf_1dt = np.array([])
+	P_acf_amp = np.array([])
 
 	failed_files = []
 
@@ -87,6 +88,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		median = -1
 		s_window = -1
 		acf_1dt = -1
+		acf_amp = -1
 		with fits.open(file, mode='readonly') as hdulist:
 			try:
 				tess_bjd = hdulist[1].data['TIME']
@@ -97,6 +99,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 				P_median = np.append(P_median, median)
 				P_s_window = np.append(P_s_window, s_window)
 				P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
+				P_acf_amp = np.append(P_acf_amp, acf_amp)
 				failed_files.append(filename)
 				np.savetxt(gp_data_file, ([]))
 				print('Reading file ' + filename + ' failed')
@@ -122,16 +125,19 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		                            min_period=0.1, max_period=27, max_peaks=2)
 		if len(acf['peaks']) > 0:
 			acf_1dt = acf['peaks'][0]['period']
+			acf_amp = acf['autocorr'][1][np.where(acf['autocorr'][0] == acf_1dt)]
 			mask = np.where((acf['autocorr'][0] == acf['peaks'][0]['period']))[0]
 			acf_1pk = acf['autocorr'][1][mask][0]
 			s_window = int(acf_1dt/np.fabs(np.nanmedian(np.diff(df_tbl['TIME']))) / 6)
 		else:
 			acf_1dt = (tbl['TIME'][-1] - tbl['TIME'][0])/2
+			acf_amp = 0
 			s_window = 128
 
 		P_median = np.append(P_median, median)
 		P_s_window = np.append(P_s_window, s_window)
 		P_acf_1dt = np.append(P_acf_1dt, acf_1dt)
+		P_acf_amp = np.append(P_acf_amp, acf_amp)
 
 		# Run GP fit on the lightcurve if we haven't already
 		if os.path.exists(gp_data_file) and not clobberGP:
@@ -312,7 +318,7 @@ def procFlares(prefix, filenames, path, clobberGP=False, makePlots=False, writeL
 		flare_out.to_csv(log_path + prefix + '_flare_out.csv', index=False)
 
 		param_out = pd.DataFrame(data={'file':ALL_FILES[:l], 'TIC':ALL_TIC[:l], 'med':P_median[:l], \
-			                           's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l]})
+			                           's_window':P_s_window[:l], 'acf_1dt':P_acf_1dt[:l], 'acf_amp':P_acf_amp[:l]})
 		param_out.to_csv(log_path + prefix + '_param_out.csv', index=False)
 
 	for k in range(len(failed_files)):
