@@ -535,7 +535,11 @@ def iterGP_rotation(x, y, yerr, period_guess, acf_1pk, num_iter=20, ax=None, n_s
 	y_gp = y_clip[x_ind]
 	yerr_gp = yerr_clip[x_ind]
 
-	gp = fh.get_rotation_gp(x_gp, y_gp, yerr_gp, period_guess, 0, 13)
+	fac = 0.9
+	min_period = period_guess * fac
+	max_period = period_guess / fac
+	gp = fh.get_rotation_gp(x_gp, y_gp, yerr_gp, period_guess, min_period, max_period)
+
 	# Now calculate the covariance matrix using the initial
 	# kernel parameters
 	gp.compute(x, yerr)
