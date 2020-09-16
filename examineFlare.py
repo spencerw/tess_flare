@@ -10,15 +10,7 @@ import sys
 
 import flareHelpers as fh
 
-prefix = '1to13'
-path = '/astro/store/gradscratch/tmp/scw7/tessData/lightcurves/sec1to13/'
-log_path = path + 'log/'
-
-df = pd.read_csv(log_path + prefix + '_flare_out.csv')
-df_param = pd.read_csv(log_path + prefix + '_param_out.csv')
-df = df[df['f_chisq'] > 0]
-
-def examineFlare(file, t0_list=[]):
+def examineFlare(file, df, df_param, path, t0_list=[]):
     if len(t0_list) > 0:
         flares = df[np.isin(df['t0'], t0_list)]
     else:
@@ -82,5 +74,3 @@ def examineFlare(file, t0_list=[]):
                                        + '\n FWHM/window = ' + '{:.2f}'.format(fl['g_fwhm_win']))
         axes[row_idx][col_idx].legend()
         axes[row_idx][col_idx].set_title('Skew = ' + '{:.3f}'.format(fl['skew']))
-
-    fig.savefig('flares.png', format='png')
