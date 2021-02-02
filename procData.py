@@ -3,12 +3,13 @@ import pandas as pd
 import os
 import astropy.units as u
 
-from flareTools import printProgressBar
+from flareTools import printProgressBar, Wright2011_tau
 
 # Get rotation periods from GP output files
 # Crossmatch GAIA and TESS targets
 # Calculate luminosities by estimating TESS mag from GAIA color
 # Filter flares based on flare model fits
+# Construct machine-readable table to supplement paper
 
 prefix = 'allsky'
 path = '/astro/store/gradscratch/tmp/scw7/tessData/lightcurves/' + prefix + '/'
@@ -65,12 +66,15 @@ dist = tess_gaia['r_est'].values*u.pc
 # Absolute G magnitude (from GAIA dr2 paper)
 G_abs_mag = tess_gaia['phot_g_mean_mag'] + 5 + (5*np.log10(tess_gaia['parallax']/1000))
 
-iso_table1 = pd.read_csv('output221284170243.dat.txt', comment='#', delim_whitespace=True)
-iso_table2 = pd.read_csv('output768246532491.dat.txt', comment='#', delim_whitespace=True)
+iso_table1 = pd.read_csv('outputTESS.dat', comment='#', delim_whitespace=True)
+iso_table2 = pd.read_csv('outputGaia.dat', comment='#', delim_whitespace=True)
+iso_table3 = pd.read_csv('outputUBVRI.dat', comment='#', delim_whitespace=True)
 iso_table1['Gmag'] = iso_table2['Gmag']
 iso_table1['G_BPbrmag'] = iso_table2['G_BPbrmag']
 iso_table1['G_BPftmag'] = iso_table2['G_BPftmag']
 iso_table1['G_RPmag'] = iso_table2['G_RPmag']
+iso_table1['Bmag'] = iso_table3['Bmag']
+iso_table1['Vmag'] = iso_table3['Vmag']
 iso = iso_table1
 
 T = iso['TESSmag'].values[::-1]
@@ -79,7 +83,11 @@ G_R = iso['G_RPmag'].values[::-1]
 G_mag = iso['Gmag'].values[::-1]
 color = G_mag - G_R
 
-# Interpolate gaia color onto isochrone to get TESS mag
+Bmag = iso['Bmag'].values[::-1]
+Vmag = iso['Vmag'].values[::-1]
+BminV_iso = Bmag - Vmag
+
+# Interpolate gaia color onto isochrone to get TESS mag and B - V
 G_min_Grp = tess_gaia['phot_g_mean_mag'] - tess_gaia['phot_rp_mean_mag']
 
 # The cutting gets a little funky here. Need to cleanly cut out the main sequence part of the isochrone, otherwise
@@ -92,6 +100,8 @@ mask_real = (G_min_Grp > color_min) & (G_min_Grp < color_max)
 TESS_mag_int = np.interp(G_min_Grp, G_mag[mask_iso] - G_R[mask_iso], T[mask_iso])
 G_abs_mag_int = np.interp(G_min_Grp[mask_real], G_mag[mask_iso] - G_R[mask_iso], G_mag[mask_iso])
 
+BminV_int = np.interp(G_min_Grp, G_mag[mask_iso] - G_R[mask_iso], BminV_iso[mask_iso])
+
 # Convert TESS mag to luminosity
 Tf0 = 4.03e-6*u.erg/u.s/u.cm**2 # Zero point TESS flux (from Sullivan 2017)
 
@@ -100,11 +110,15 @@ m_t = TESS_mag_int + 5*np.log10(dist.value) - 5
 f = 10**(-m_t/2.5)*Tf0
 L = 4*np.pi*(dist.to(u.cm))**2*f
 
+# Convective turnover time
+tau = Wright2011_tau(BminV_int)
+
 ms_mask = (G_min_Grp[mask_real] > color_min) & (G_min_Grp[mask_real] < color_max) & (G_abs_mag[mask_real] < G_abs_mag_int + iso_width) & (G_abs_mag[mask_real] > G_abs_mag_int - iso_width)
 
 tess_gaia_table = pd.DataFrame({'TIC':tics, 'r_est':dist, 'lum':L, 'G_BPbrmag':tess_gaia['phot_bp_mean_mag'], \
                       'G_RPmag':tess_gaia['phot_rp_mean_mag'], 'G_mag':tess_gaia['phot_g_mean_mag'], 'G_abs_mag':G_abs_mag,\
-                       'source_id':tess_gaia['source_id'], 'ra':tess_gaia['ra'], 'dec':tess_gaia['dec'], 'is_ms': np.isin(tics, tics[mask_real][ms_mask])})
+                       'source_id':tess_gaia['source_id'], 'ra':tess_gaia['ra'], 'dec':tess_gaia['dec'],\
+                       'tau': tau, 'is_ms': np.isin(tics, tics[mask_real][ms_mask])})
 
 print(str(len(tess_gaia_table)) + ' targets found in TESS-Gaia crossmatch')
 
@@ -149,3 +163,60 @@ print(str(len(df)) + ' flare events from ' + str(len(np.unique(df['TIC']))) + ' 
 
 df.to_csv(prefix + '_flare_out.csv')
 df_param_g.to_csv(prefix + '_param_out.csv')
+
+#####################################################################
+# Step 5: Construct machine-readable table to supplement paper
+#####################################################################
+
+# The _param file contains one entry per light curve
+# We want our table to have one entry per target
+
+# Columns to include:
+# TIC
+# RA/Dec
+# Gaia Mags
+# Luminosity
+# Number of flares
+# GP rotation period
+# AFC rotation period
+
+TICs = np.unique(df['TIC'])
+print('Generating machine-readable table with ' + str(len(TICs)) + ' entries')
+ra = np.empty(len(TICs))
+dec = np.empty_like(ra)
+lum = np.empty_like(ra)
+BPbr_mag = np.empty_like(ra)
+RP_mag = np.empty_like(ra)
+G_mag = np.empty_like(ra)
+G_abs_mag = np.empty_like(ra)
+acf_rot = np.empty_like(ra)
+gp_rot = np.empty_like(ra)
+num_fl = np.empty_like(ra)
+
+printProgressBar(0, len(TICs), prefix = 'Progress:', suffix = 'Complete', length = 50)
+
+for idx, TIC in enumerate(TICs):
+    # These quantities dont vary between light curves
+    first_row = df_param_g[df_param_g['TIC'] == TIC].iloc[0]
+    ra[idx] = first_row['ra']
+    dec[idx] = first_row['dec']
+    lum[idx] = first_row['lum']
+    BPbr_mag[idx] = first_row['G_BPbrmag']
+    RP_mag[idx] = first_row['G_RPmag']
+    G_mag[idx] = first_row['G_mag']
+    G_abs_mag[idx] = first_row['G_abs_mag']
+    
+    # These quantities do, take the average
+    acf_rot[idx] = first_row['acf_1dt'].mean()
+    gp_rot[idx] = np.exp(first_row['log_P'].mean())
+    
+    num_fl[idx] = len(df_flare[df_flare['TIC'] == TIC])
+    
+    printProgressBar(idx, len(TICs), prefix = 'Progress:', suffix = 'Complete', length = 50)
+
+machine_table = pd.DataFrame({'TIC':TICs, 'ra':ra, 'dec':dec,'G_BPbrmag':BPbr_mag, \
+                              'G_RPmag':RP_mag, 'G_mag':G_mag, 'G_abs_mag':G_abs_mag, \
+                              'lum':lum, 'num_flares':num_fl, 'acf_per':acf_rot, \
+                              'gp_per':gp_rot})
+
+machine_table.to_csv(prefix + '_machine_table.csv')
